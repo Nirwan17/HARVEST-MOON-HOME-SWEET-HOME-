@@ -386,13 +386,21 @@ static void JNICALL n_Changes(JNIEnv* env, jclass, jobject ctx, jint featNum, js
     }
 }
 
+// Java Main.Start() hanya memanggil CheckOverlayPermission; menu baru muncul
+// kalau native memanggil Main.StartWithoutPermission setelah izin overlay ada.
+static void startMenu(JNIEnv* env, jobject ctx) {
+    jclass mc = env->FindClass("com/android/support/Main");
+    jmethodID m = env->GetStaticMethodID(mc, "StartWithoutPermission", "(Landroid/content/Context;)V");
+    env->CallStaticVoidMethod(mc, m, ctx);
+}
+
 static void JNICALL n_CheckOverlayPermission(JNIEnv* env, jclass, jobject ctx) {
     jclass vc = env->FindClass("android/os/Build$VERSION");
     jint sdk = env->GetStaticIntField(vc, env->GetStaticFieldID(vc, "SDK_INT", "I"));
-    if (sdk < 23) return;
+    if (sdk < 23) { startMenu(env, ctx); return; }
     jclass st = env->FindClass("android/provider/Settings");
     jmethodID can = env->GetStaticMethodID(st, "canDrawOverlays", "(Landroid/content/Context;)Z");
-    if (env->CallStaticBooleanMethod(st, can, ctx)) return;
+    if (env->CallStaticBooleanMethod(st, can, ctx)) { startMenu(env, ctx); return; }
     toast(env, ctx, "Izinkan tampil di atas aplikasi lain, lalu buka ulang game");
     jclass cc = env->GetObjectClass(ctx);
     jstring pkg = (jstring)env->CallObjectMethod(ctx, env->GetMethodID(cc, "getPackageName", "()Ljava/lang/String;"));
