@@ -15,18 +15,16 @@
 
 struct PatchDef { int feat; uint32_t rva; uint32_t exp[2]; uint32_t code[2]; const char* name; };
 static const PatchDef PATCHES[] = {
-    {1, 0x2660684, {0xFC1D0FE8, 0xA90157FE}, {0xD65F03C0, 0xD65F03C0}, "GameTimeController.OnUpdate"},
     {3, 0x2616EC8, {0xF81D0FFE, 0xA90157F6}, {0x52800020, 0xD65F03C0}, "CropInfoUpdater.IsWeatherWatering"},
-    {5, 0x2622D00, {0xA9BE57FE, 0xA9014FF4}, {0x52800C80, 0xD65F03C0}, "CropInfoUpdater.GetQualityPointWatering"},
-    {5, 0x2622DD4, {0xF81E0FFE, 0xA9014FF4}, {0x52800C80, 0xD65F03C0}, "CropInfoUpdater.GetQualityPointFertilize"},
-    {5, 0x2622E4C, {0xA9BE57FE, 0xA9014FF4}, {0x52800C80, 0xD65F03C0}, "CropInfoUpdater.GetQualityPointAreaType"},
-    {5, 0x2623048, {0xA9BE57FE, 0xA9014FF4}, {0x52800C80, 0xD65F03C0}, "CropInfoUpdater.GetQualityPointSeason"},
+    {5, 0x26254A4, {0x6DBA23E9, 0xF9000BFE}, {0x52800060, 0xD65F03C0}, "FarmUtil.LotProductQualityIndex"},
     {6, 0x2622C80, {0xA9BE57FE, 0xA9014FF4}, {0x52800020, 0xD65F03C0}, "CropInfoUpdater.IsMaxGrowPhase"},
+    {8, 0x2740C74, {0xF81D0FFE, 0xA90157F6}, {0xD65F03C0, 0xD65F03C0}, "AnimalData.RunAway"},
     {9, 0x2861EAC, {0xA9BF4FFE, 0xAA0003F3}, {0x52800000, 0xD65F03C0}, "NpcInfo.GetGift"},
     {9, 0x2861F34, {0xA9BF4FFE, 0xAA0003F3}, {0x52800000, 0xD65F03C0}, "NpcInfo.GetTalked"},
-    {10, 0x25E78DC, {0xF81D0FFE, 0xA90157F6}, {0x52800140, 0xD65F03C0}, "MineCrashableObjects.GetItemNumOre"},
+    {11, 0x25ECF2C, {0xA9BF4FFE, 0xB9402408}, {0xD65F03C0, 0xD65F03C0}, "MineTrapHole.ApplyCellHit"},
+    {11, 0x25BDFB8, {0xD10243FF, 0xA90757FE}, {0xD65F03C0, 0xD65F03C0}, "MineFallStone.StartHitFallStone"},
 };
-#define NPATCH 10
+#define NPATCH 8
 
 struct HookDef { uint32_t rva; uint32_t exp[4]; const char* name; };
 static const HookDef H_PMUPDATE = {0x28B6194, {0xF81C0FFE, 0xA9015FF8, 0xA90257F6, 0xA9034FF4}, "PartMapManager.ExternalUpdate"};
@@ -34,27 +32,39 @@ static const HookDef H_ADDITEM = {0x26BE4EC, {0xA9BB6FFE, 0xA90167FA, 0xA9025FF8
 static const HookDef H_SETHP = {0x26C9A98, {0xD10143FF, 0xF90013FE, 0xA90357F6, 0xA9044FF4}, "PlayerInfo.set_Hp"};
 static const HookDef H_FIGHT = {0x28E4D78, {0x6DBB2BEB, 0x6D0123E9, 0xA9025FFE, 0xA90357F6}, "FishingController.UpdateFighting"};
 static const HookDef H_ANIMDAY = {0x2741604, {0xA9BD5FFE, 0xA90157F6, 0xA9024FF4, 0x90015A55}, "AnimalData.OnDayFinished"};
+static const HookDef H_TIMELATE = {0x2657A00, {0xFC1D0FE8, 0xA90157FE, 0xA9024FF4, 0xD0016195}, "TimeScheduleController.LateUpdate"};
+static const HookDef H_APPLYHIT = {0x25E7B5C, {0xD10103FF, 0xA90257FE, 0xA9034FF4, 0xB0016514}, "MineCrashableObjects.ApplyHit"};
+static const HookDef H_SPEED = {0x2709670, {0xF81E0FFE, 0xA9014FF4, 0x90015C14, 0x395CA288}, "ActionStateMove.GetSpeed"};
+static const HookDef H_PLUPDATE = {0x26CB0A8, {0xF81E0FFE, 0xA9014FF4, 0xD0015DF4, 0x39521A88}, "Player.Update"};
 
+#define FISH_SUCCESS 505158168
 #define OFF_GETFT 0x2566BB0
-#define OFF_GETNAME 0x24FDC2C
 #define OFF_REQFT 0x28B8228
-#define OFF_GETFISH 0x28E67D8
 #define OFF_EATFEED 0x27420E8
+#define OFF_WARP 0x27189C8
+#define OFF_ISWARPEND 0x2718BC4
+#define OFF_SETKIN 0x2718B18
+#define OFF_GETPOS 0x24FD740
+#define OFF_GETROT 0x24FD7E8
+#define OFF_FISHSTATE 0x28E1114
 
 // ---------------------------------------------------------------------------
-// Harvest Moon: Home Sweet Home - mod menu (LGL Mod Menu compatible)
-// Mengganti libModMenu.so lama. Semua fitur lama + Teleport + Tambang.
+// Harvest Moon: Home Sweet Home - mod menu v2 (LGL Mod Menu compatible)
 // ---------------------------------------------------------------------------
 
 #define TAG "HSHMod"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
-#define MAXF 32
+#define MAXF 40
 static uintptr_t g_base = 0;
 static volatile bool g_f[MAXF];
-static volatile int g_tpReq = 0;
+static volatile int g_speed = 1;
+static volatile uint32_t g_tpUid = 0;
+static volatile int g_frame = 0;
 static void* g_pm = nullptr;
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+
+struct Vec3 { float x, y, z; };
 
 // ---------------------------------------------------------------- memory ---
 static uintptr_t findBase() {
@@ -168,87 +178,68 @@ static bool installHook(const HookDef& h, void* repl, void** orig) {
 }
 
 // ------------------------------------------------------------- teleport ----
-static std::vector<uint32_t> g_uids;
-static std::vector<std::string> g_names;
-static int g_idx = -1;
+struct TpPoint { int feat; uint32_t uid; const char* label; };
+static const TpPoint TP[] = {
+    {20, 3001, "Rumah"},
+    {21, 3003, "Tengah Desa"},
+    {22, 3002, "Balai Desa"},
+    {23, 2108, "Toko Hewan"},
+    {24, 2105, "Restoran"},
+    {25, 2104, "Dermaga"},
+    {26, 9002, "Tambang"},
+    {27, 3004, "Puncak Gunung"},
+    {28, 2202, "Pemandian Air Panas"},
+    {30, 4004, "Lomba Pancing 1"},
+    {31, 4005, "Lomba Pancing 2"},
+    {32, 4006, "Lomba Pancing 3"},
+    {33, 2110, "Rumah Petani Besar"},
+    {34, 2106, "Toko Umum"},
+    {35, 2103, "Toko Suvenir"},
+};
+#define NTP ((int)(sizeof(TP) / sizeof(TP[0])))
 
-static std::string pkgName() {
-    char buf[256] = {0};
-    FILE* f = fopen("/proc/self/cmdline", "r");
-    if (f) { size_t r = fread(buf, 1, 255, f); (void)r; fclose(f); }
-    return std::string(buf);
-}
+static bool g_warpPending = false;
+static int g_warpFrames = 0;
 
-static std::string utf16ToUtf8(void* s) {
-    std::string r;
-    if (!s) return r;
-    int len = *(int*)((char*)s + 0x10);
-    if (len < 0 || len > 300) return r;
-    const uint16_t* c = (const uint16_t*)((char*)s + 0x14);
-    for (int i = 0; i < len; i++) {
-        uint32_t ch = c[i];
-        if (ch < 0x80) r += (char)ch;
-        else if (ch < 0x800) { r += (char)(0xC0 | (ch >> 6)); r += (char)(0x80 | (ch & 0x3F)); }
-        else { r += (char)(0xE0 | (ch >> 12)); r += (char)(0x80 | ((ch >> 6) & 0x3F)); r += (char)(0x80 | (ch & 0x3F)); }
-    }
-    return r;
-}
+static void* g_player = nullptr;   // diisi oleh hook Player.Update
+static void* getPlayer() { return g_player; }
 
-static std::string outDir() {
-    std::string pkg = pkgName();
-    std::string d1 = "/storage/emulated/0/Android/data/" + pkg;
-    std::string d2 = d1 + "/files";
-    mkdir(d1.c_str(), 0775);
-    mkdir(d2.c_str(), 0775);
-    return d2;
-}
-
-static void buildList() {
-    g_uids.clear();
-    g_names.clear();
+static void doWarp(uint32_t uid) {
     typedef void* (*t_getFT)(void*);
-    typedef void* (*t_getName)(void*, uint32_t, void*);
+    typedef float (*t_getPos)(void*, uint32_t, int, void*);
+    typedef float (*t_getRot)(void*, uint32_t, void*);
+    typedef void (*t_Warp)(void*, Vec3, Vec3, void*);
+    typedef void (*t_ReqFT)(void*, uint32_t, void*);
     void* acc = ((t_getFT)(g_base + OFF_GETFT))(nullptr);
-    if (!acc) return;
-    char* dict = *(char**)((char*)acc + 0xB0);
-    if (!dict) return;
-    char* entries = *(char**)(dict + 0x18);
-    int count = *(int*)(dict + 0x20);
-    if (!entries || count <= 0 || count > 5000) return;
-    for (int i = 0; i < count; i++) {
-        char* e = entries + 0x20 + i * 16;
-        int next = *(int*)(e + 4);
-        uint32_t key = *(uint32_t*)(e + 8);
-        if (next < -1 || key == 0) continue;
-        g_uids.push_back(key);
+    void* pl = getPlayer();
+    if (!acc || !pl) return;
+    Vec3 p;
+    p.x = ((t_getPos)(g_base + OFF_GETPOS))(acc, uid, 0, nullptr);
+    p.y = ((t_getPos)(g_base + OFF_GETPOS))(acc, uid, 1, nullptr);
+    p.z = ((t_getPos)(g_base + OFF_GETPOS))(acc, uid, 2, nullptr);
+    float rot = ((t_getRot)(g_base + OFF_GETROT))(acc, uid, nullptr);
+    LOGI("warp uid %u -> %f %f %f rot %f", uid, p.x, p.y, p.z, rot);
+    if (p.x == 0.0f && p.y == 0.0f && p.z == 0.0f) {
+        // koordinat kosong: pakai fast travel biasa (ada layar loading)
+        if (g_pm) ((t_ReqFT)(g_base + OFF_REQFT))(g_pm, uid, nullptr);
+        return;
     }
-    for (size_t i = 0; i < g_uids.size(); i++) {
-        void* s = ((t_getName)(g_base + OFF_GETNAME))(acc, g_uids[i], nullptr);
-        g_names.push_back(utf16ToUtf8(s));
-    }
-    std::string path = outDir() + "/ft_list.txt";
-    FILE* f = fopen(path.c_str(), "w");
-    if (f) {
-        for (size_t i = 0; i < g_uids.size(); i++)
-            fprintf(f, "%zu\t%u\t0x%X\t%s\n", i + 1, g_uids[i], g_uids[i], g_names[i].c_str());
-        fclose(f);
-    }
-    LOGI("fast travel list: %zu", g_uids.size());
+    Vec3 r = {0.0f, rot, 0.0f};
+    ((t_Warp)(g_base + OFF_WARP))(pl, p, r, nullptr);
+    g_warpPending = true;
+    g_warpFrames = 0;
 }
 
-static void doTeleport(int dir) {
-    typedef void (*t_ReqFT)(void*, uint32_t, void*);
-    if (!g_pm) return;
-    if (g_uids.empty()) buildList();
-    if (g_uids.empty()) return;
-    int n = (int)g_uids.size();
-    if (g_idx < 0) g_idx = (dir > 0) ? 0 : n - 1;
-    else g_idx = (g_idx + dir + n) % n;
-    uint32_t uid = g_uids[g_idx];
-    ((t_ReqFT)(g_base + OFF_REQFT))(g_pm, uid, nullptr);
-    std::string path = outDir() + "/ft_current.txt";
-    FILE* f = fopen(path.c_str(), "w");
-    if (f) { fprintf(f, "%d/%d\t%u\t%s\n", g_idx + 1, n, uid, g_names[g_idx].c_str()); fclose(f); }
+static void pollWarp() {
+    typedef bool (*t_IsWarpEnd)(void*, bool, void*);
+    typedef void (*t_SetKin)(void*, bool, void*);
+    void* pl = getPlayer();
+    if (!pl) { g_warpPending = false; return; }
+    bool done = ((t_IsWarpEnd)(g_base + OFF_ISWARPEND))(pl, true, nullptr);
+    if (done || ++g_warpFrames > 900) {
+        if (!done) ((t_SetKin)(g_base + OFF_SETKIN))(pl, false, nullptr);
+        g_warpPending = false;
+    }
 }
 
 // ---------------------------------------------------------- hook bodies ----
@@ -257,16 +248,31 @@ typedef bool (*t_AddItem)(void*, uint32_t, int, int*, int, bool, void*);
 typedef void (*t_SetHp)(void*, int, void*);
 typedef void (*t_Fight)(void*, float, void*);
 typedef void (*t_AnimDay)(void*, bool, void*);
+typedef void (*t_TimeLate)(void*, float, void*);
+typedef void (*t_ApplyHit)(void*, void*);
+typedef float (*t_Speed)(void*, void*);
+typedef void (*t_PlUpdate)(void*, void*);
 static t_PMUpdate o_PMUpdate = nullptr;
 static t_AddItem o_AddItem = nullptr;
 static t_SetHp o_SetHp = nullptr;
 static t_Fight o_Fight = nullptr;
 static t_AnimDay o_AnimDay = nullptr;
+static t_TimeLate o_TimeLate = nullptr;
+static t_ApplyHit o_ApplyHit = nullptr;
+static t_Speed o_Speed = nullptr;
+static t_PlUpdate o_PlUpdate = nullptr;
+
+static void h_PlUpdate(void* self, void* mi) {
+    g_player = self;
+    o_PlUpdate(self, mi);
+}
 
 static void h_PMUpdate(void* self, float dt, void* mi) {
     g_pm = self;
-    int req = g_tpReq;
-    if (req != 0) { g_tpReq = 0; doTeleport(req); }
+    g_frame++;
+    uint32_t u = g_tpUid;
+    if (u != 0) { g_tpUid = 0; doWarp(u); }
+    if (g_warpPending) pollWarp();
     o_PMUpdate(self, dt, mi);
 }
 
@@ -283,10 +289,12 @@ static void h_SetHp(void* self, int value, void* mi) {
     o_SetHp(self, value, mi);
 }
 
+static int g_lastFishFrame = -1000;
 static void h_Fight(void* self, float dt, void* mi) {
-    if (g_f[7]) {
-        typedef void (*t_GetFish)(void*, void*);
-        ((t_GetFish)(g_base + OFF_GETFISH))(self, nullptr);
+    if (g_f[7] && (g_frame - g_lastFishFrame) > 60) {
+        g_lastFishFrame = g_frame;
+        typedef void (*t_State)(void*, int, void*);
+        ((t_State)(g_base + OFF_FISHSTATE))(self, FISH_SUCCESS, nullptr);
         return;
     }
     o_Fight(self, dt, mi);
@@ -299,6 +307,42 @@ static void h_AnimDay(void* self, bool dirt, void* mi) {
         dirt = false;
     }
     o_AnimDay(self, dirt, mi);
+}
+
+// Freeze Time: tahan jam game (TimeScheduleController)
+static bool g_frozenSnap = false;
+static float g_snap[6];
+static const int SNAP_OFF[6] = {0x20, 0x24, 0x2C, 0x30, 0x34, 0x38};
+static void h_TimeLate(void* self, float dt, void* mi) {
+    if (g_f[1]) {
+        if (!g_frozenSnap) {
+            for (int i = 0; i < 6; i++) g_snap[i] = *(float*)((char*)self + SNAP_OFF[i]);
+            g_frozenSnap = true;
+        } else {
+            for (int i = 0; i < 6; i++) *(float*)((char*)self + SNAP_OFF[i]) = g_snap[i];
+        }
+        dt = 0.0f;
+    } else {
+        g_frozenSnap = false;
+    }
+    o_TimeLate(self, dt, mi);
+}
+
+// Batu tambang pecah sekali pukul
+static void h_ApplyHit(void* self, void* mi) {
+    if (g_f[10]) {
+        *(int*)((char*)self + 0x38) = 1;
+        if (*(int*)((char*)self + 0x4C) > 1) *(int*)((char*)self + 0x4C) = 1;
+    }
+    o_ApplyHit(self, mi);
+}
+
+// Kecepatan jalan pemain (hanya pemain, bukan NPC)
+static float h_Speed(void* self, void* mi) {
+    float v = o_Speed(self, mi);
+    int m = g_speed;
+    if (m > 1 && *(bool*)((char*)self + 0x28)) v *= (float)m;
+    return v;
 }
 
 static void* worker(void*) {
@@ -314,6 +358,10 @@ static void* worker(void*) {
     installHook(H_SETHP, (void*)h_SetHp, (void**)&o_SetHp);
     installHook(H_FIGHT, (void*)h_Fight, (void**)&o_Fight);
     installHook(H_ANIMDAY, (void*)h_AnimDay, (void**)&o_AnimDay);
+    installHook(H_TIMELATE, (void*)h_TimeLate, (void**)&o_TimeLate);
+    installHook(H_APPLYHIT, (void*)h_ApplyHit, (void**)&o_ApplyHit);
+    installHook(H_SPEED, (void*)h_Speed, (void**)&o_Speed);
+    installHook(H_PLUPDATE, (void*)h_PlUpdate, (void**)&o_PlUpdate);
     for (int f = 1; f < MAXF; f++) if (g_f[f]) setPatches(f, true);
     return nullptr;
 }
@@ -345,10 +393,28 @@ static const char* const FEATURES[] = {
     "8_Toggle_Animal Care",
     "9_Toggle_Unlimited Gifts/Talks",
     "Category_Tambang",
-    "10_Toggle_Mine Ore x10",
-    "Category_Teleport",
-    "11_Button_Teleport Titik Berikutnya",
-    "12_Button_Teleport Titik Sebelumnya",
+    "10_Toggle_Batu Sekali Pukul",
+    "11_Toggle_Tanpa Jebakan dan Batu Jatuh",
+    "Category_Pemain",
+    "12_SeekBar_Kecepatan Pemain_1_6",
+    "Category_Teleport (tanpa loading)",
+    "Collapse_Titik Utama",
+    "CollapseAdd_20_Button_Rumah",
+    "CollapseAdd_21_Button_Tengah Desa",
+    "CollapseAdd_22_Button_Balai Desa",
+    "CollapseAdd_23_Button_Toko Hewan (bibit dan kemah)",
+    "CollapseAdd_24_Button_Restoran (pantai)",
+    "CollapseAdd_25_Button_Dermaga (rumah nelayan)",
+    "CollapseAdd_26_Button_Tambang (pintu luar)",
+    "CollapseAdd_27_Button_Puncak Gunung",
+    "CollapseAdd_28_Button_Pemandian Air Panas",
+    "Collapse_Titik Tambahan (cari danau)",
+    "CollapseAdd_30_Button_Lomba Pancing 1",
+    "CollapseAdd_31_Button_Lomba Pancing 2",
+    "CollapseAdd_32_Button_Lomba Pancing 3",
+    "CollapseAdd_33_Button_Rumah Petani Besar",
+    "CollapseAdd_34_Button_Toko Umum",
+    "CollapseAdd_35_Button_Toko Suvenir",
 };
 
 static const char* const SETTINGS[] = {
@@ -376,13 +442,23 @@ static jobjectArray JNICALL n_GetFeatureList(JNIEnv* env, jobject) {
     return makeArray(env, FEATURES, (int)(sizeof(FEATURES) / sizeof(FEATURES[0])));
 }
 
-static void JNICALL n_Changes(JNIEnv* env, jclass, jobject ctx, jint featNum, jstring, jint, jboolean b, jstring) {
-    if (featNum >= 1 && featNum <= 10) {
+static void JNICALL n_Changes(JNIEnv* env, jclass, jobject ctx, jint featNum, jstring, jint value, jboolean b, jstring) {
+    if (featNum >= 1 && featNum <= 11) {
         g_f[featNum] = (b != JNI_FALSE);
         setPatches(featNum, b != JNI_FALSE);
-    } else if (featNum == 11 || featNum == 12) {
-        if (!g_pm) { toast(env, ctx, "Teleport belum siap, masuk ke dunia game dulu"); return; }
-        g_tpReq = (featNum == 11) ? 1 : -1;
+    } else if (featNum == 12) {
+        int v = value;
+        if (v < 1) v = 1;
+        if (v > 6) v = 6;
+        g_speed = v;
+    } else {
+        for (int i = 0; i < NTP; i++) {
+            if (TP[i].feat != featNum) continue;
+            if (!g_pm) { toast(env, ctx, "Teleport belum siap, masuk ke dunia game dulu"); return; }
+            g_tpUid = TP[i].uid;
+            toast(env, ctx, TP[i].label);
+            return;
+        }
     }
 }
 
