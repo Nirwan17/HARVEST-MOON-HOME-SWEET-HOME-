@@ -36,8 +36,27 @@ static const HookDef H_TIMELATE = {0x2657A00, {0xFC1D0FE8, 0xA90157FE, 0xA9024FF
 static const HookDef H_APPLYHIT = {0x25E7B5C, {0xD10103FF, 0xA90257FE, 0xA9034FF4, 0xB0016514}, "MineCrashableObjects.ApplyHit"};
 static const HookDef H_SPEED = {0x2709670, {0xF81E0FFE, 0xA9014FF4, 0x90015C14, 0x395CA288}, "ActionStateMove.GetSpeed"};
 static const HookDef H_PLUPDATE = {0x26CB0A8, {0xF81E0FFE, 0xA9014FF4, 0xD0015DF4, 0x39521A88}, "Player.Update"};
+static const HookDef H_GETHAVE = {0x26BFEF8, {0xA9BD5FFE, 0xA90157F6, 0xA9024FF4, 0xD0015E57}, "ItemInfo.GetHaveItem"};
+static const HookDef H_ENVLATE = {0x265770C, {0xD10183FF, 0xFD0013E8, 0xA9035FFE, 0xA90457F6}, "EnvironmentManager.ExternalLateUpdate"};
+static const HookDef H_FIINIT = {0x246ED30, {0xD10403FF, 0xFD004BEA, 0x6D0A23E9, 0xA90B6FFE}, "FieldItemEntity.Init"};
+static const HookDef H_FIDESTROY = {0x246F20C, {0xA9BD5FFE, 0xA90157F6, 0xA9024FF4, 0x900170D4}, "FieldItemEntity.OnDestroy"};
+static const HookDef H_MINEUPD = {0x25BF0C4, {0xD10143FF, 0xFD000BE8, 0xF9000FFE, 0xA9025FF8}, "MineController.ExternalUpdate"};
+static const HookDef H_CAP = {0x26BD928, {0xA9BE57FE, 0xA9014FF4, 0x90015E75, 0x39502EA8}, "InventoryInfo.GetCapacity"};
+static const HookDef H_CROPUPD = {0x2615650, {0xD10103FF, 0xF9000BFE, 0xA90257F6, 0xA9034FF4}, "CropFieldController.ExternalUpdate"};
+static const HookDef H_REMOVE = {0x26BFBF8, {0xF81C0FFE, 0xA9015FF8, 0xA90257F6, 0xA9034FF4}, "ItemInfo.RemoveItem"};
+static const HookDef H_DOWSE = {0x2857D3C, {0xD10143FF, 0xFD0013E8, 0xA90357FE, 0xA9044FF4}, "DowsingMapController.DoDowSing"};
 
 #define FISH_SUCCESS 505158168
+#define INV_ITEMBAG 33554944
+#define OFF_RESOLVE 0x22B724C
+struct KeepRange { uint32_t start; uint32_t size; };
+static const KeepRange KEEP[] = {
+    {0x26174E8, 384},
+    {0x2617790, 564},
+    {0x26183CC, 200},
+    {0x28EFD08, 272},
+};
+#define NKEEP (int)(sizeof(KEEP)/sizeof(KEEP[0]))
 #define OFF_GETFT 0x2566BB0
 #define OFF_REQFT 0x28B8228
 #define OFF_EATFEED 0x27420E8
@@ -47,6 +66,18 @@ static const HookDef H_PLUPDATE = {0x26CB0A8, {0xF81E0FFE, 0xA9014FF4, 0xD0015DF
 #define OFF_GETPOS 0x24FD740
 #define OFF_GETROT 0x24FD7E8
 #define OFF_FISHSTATE 0x28E1114
+#define OFF_ADDMONEY 0x26C10E8
+#define OFF_ADVTIME 0x2658C20
+#define OFF_ATTACHCAM 0x26CA5FC
+#define OFF_PICKTHIS 0x246F180
+#define OFF_GETFURROW 0x26167C0
+#define OFF_FURROWENABLE 0x26259E0
+#define OFF_PREHARVEST 0x26179C4
+#define OFF_HARVEST 0x2617A48
+#define OFF_FURROWRC 0x26199AC
+#define OFF_SETFLOOR 0x25BE944
+#define OFF_CREATENEXT 0x25BEA64
+#define OFF_ADDITEM 0x26BE4EC
 
 // ---------------------------------------------------------------------------
 // Harvest Moon: Home Sweet Home - mod menu v2 (LGL Mod Menu compatible)
@@ -61,10 +92,31 @@ static volatile bool g_f[MAXF];
 static volatile int g_speed = 1;
 static volatile uint32_t g_tpUid = 0;
 static volatile int g_frame = 0;
+static volatile int g_rideSpeed = 1;
+static volatile int g_moneyReq = 0;
+static volatile int g_timeReq = 0;
+static void* g_itemInfo = nullptr;
+static void* g_env = nullptr;
+static void* g_timeCtl = nullptr;
 static void* g_pm = nullptr;
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
 struct Vec3 { float x, y, z; };
+struct V2I { int x, y; };
+struct UniTask { void* src; int64_t tok; };
+
+static volatile int g_pickRange = 0;
+static volatile int g_harvestReq = 0;
+static volatile int g_saveReq = 0;
+static volatile int g_gotoReq = 0;
+static volatile int g_floorReq = 0;
+static void* g_mine = nullptr;
+static Vec3 g_slot[3];
+static int g_slotSet[3];
+struct FieldRef { void* ptr; int frame; };
+static FieldRef g_fields[16];
+struct ItemRef { void* ptr; Vec3 pos; int next; };
+static std::vector<ItemRef> g_items;
 
 // ---------------------------------------------------------------- memory ---
 static uintptr_t findBase() {
@@ -204,11 +256,27 @@ static int g_warpFrames = 0;
 static void* g_player = nullptr;   // diisi oleh hook Player.Update
 static void* getPlayer() { return g_player; }
 
+static void attachCam() {
+    typedef void (*t_Attach)(void*, void*);
+    void* pl = getPlayer();
+    if (pl) ((t_Attach)(g_base + OFF_ATTACHCAM))(pl, nullptr);
+}
+
+static void warpTo(Vec3 p, float rot) {
+    typedef void (*t_Warp)(void*, Vec3, Vec3, void*);
+    void* pl = getPlayer();
+    if (!pl) return;
+    Vec3 r = {0.0f, rot, 0.0f};
+    ((t_Warp)(g_base + OFF_WARP))(pl, p, r, nullptr);
+    attachCam();
+    g_warpPending = true;
+    g_warpFrames = 0;
+}
+
 static void doWarp(uint32_t uid) {
     typedef void* (*t_getFT)(void*);
     typedef float (*t_getPos)(void*, uint32_t, int, void*);
     typedef float (*t_getRot)(void*, uint32_t, void*);
-    typedef void (*t_Warp)(void*, Vec3, Vec3, void*);
     typedef void (*t_ReqFT)(void*, uint32_t, void*);
     void* acc = ((t_getFT)(g_base + OFF_GETFT))(nullptr);
     void* pl = getPlayer();
@@ -224,10 +292,7 @@ static void doWarp(uint32_t uid) {
         if (g_pm) ((t_ReqFT)(g_base + OFF_REQFT))(g_pm, uid, nullptr);
         return;
     }
-    Vec3 r = {0.0f, rot, 0.0f};
-    ((t_Warp)(g_base + OFF_WARP))(pl, p, r, nullptr);
-    g_warpPending = true;
-    g_warpFrames = 0;
+    warpTo(p, rot);
 }
 
 static void pollWarp() {
@@ -239,6 +304,7 @@ static void pollWarp() {
     if (done || ++g_warpFrames > 900) {
         if (!done) ((t_SetKin)(g_base + OFF_SETKIN))(pl, false, nullptr);
         g_warpPending = false;
+        attachCam();
     }
 }
 
@@ -252,6 +318,15 @@ typedef void (*t_TimeLate)(void*, float, void*);
 typedef void (*t_ApplyHit)(void*, void*);
 typedef float (*t_Speed)(void*, void*);
 typedef void (*t_PlUpdate)(void*, void*);
+typedef int (*t_GetHave)(void*, uint32_t, int, bool, void*);
+typedef void (*t_EnvLate)(void*, float, void*);
+typedef void (*t_FIInit)(void*, int, Vec3, bool, uint32_t, uint32_t, void*, bool, void*);
+typedef void (*t_FIDestroy)(void*, void*);
+typedef void (*t_MineUpd)(void*, float, void*);
+typedef int (*t_Cap)(void*, uint32_t, void*);
+typedef void (*t_CropUpd)(void*, float, void*);
+typedef bool (*t_Remove)(void*, uint32_t, int, int, void*);
+typedef void (*t_Dowse)(void*, float, void*);
 static t_PMUpdate o_PMUpdate = nullptr;
 static t_AddItem o_AddItem = nullptr;
 static t_SetHp o_SetHp = nullptr;
@@ -261,10 +336,169 @@ static t_TimeLate o_TimeLate = nullptr;
 static t_ApplyHit o_ApplyHit = nullptr;
 static t_Speed o_Speed = nullptr;
 static t_PlUpdate o_PlUpdate = nullptr;
+static t_GetHave o_GetHave = nullptr;
+static t_EnvLate o_EnvLate = nullptr;
+static t_FIInit o_FIInit = nullptr;
+static t_FIDestroy o_FIDestroy = nullptr;
+static t_MineUpd o_MineUpd = nullptr;
+static t_Cap o_Cap = nullptr;
+static t_CropUpd o_CropUpd = nullptr;
+static t_Remove o_Remove = nullptr;
+static t_Dowse o_Dowse = nullptr;
 
 static void h_PlUpdate(void* self, void* mi) {
     g_player = self;
     o_PlUpdate(self, mi);
+}
+
+// ---------------------------------------------------------- icall util ----
+static void* resolveIcall(const char* a, const char* b2) {
+    typedef void* (*t_resolve)(const char*);
+    t_resolve r = (t_resolve)(g_base + OFF_RESOLVE);
+    void* p = r(a);
+    if (!p && b2) p = r(b2);
+    return p;
+}
+
+static bool getPlayerPos(Vec3* out) {
+    void* pl = g_player;
+    if (!pl) return false;
+    typedef void (*t_posInj)(void*, Vec3*);
+    typedef void* (*t_getTr)(void*);
+    static t_posInj rigFn = nullptr, trFn = nullptr;
+    static t_getTr goTr = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        rigFn = (t_posInj)resolveIcall("UnityEngine.Rigidbody::get_position_Injected(UnityEngine.Vector3&)", "UnityEngine.Rigidbody::get_position_Injected");
+        trFn = (t_posInj)resolveIcall("UnityEngine.Transform::get_position_Injected(UnityEngine.Vector3&)", "UnityEngine.Transform::get_position_Injected");
+        goTr = (t_getTr)resolveIcall("UnityEngine.GameObject::get_transform()", "UnityEngine.GameObject::get_transform");
+    }
+    void* rig = *(void**)((char*)pl + 0xB0);
+    if (rigFn && rig) { rigFn(rig, out); return true; }
+    void* go = *(void**)((char*)pl + 0x70);
+    if (trFn && goTr && go) {
+        void* tr = goTr(go);
+        if (tr) { trFn(tr, out); return true; }
+    }
+    return false;
+}
+
+static void setFps(int fps) {
+    typedef void (*t_setInt)(int);
+    static t_setInt fn = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        fn = (t_setInt)resolveIcall("UnityEngine.Application::set_targetFrameRate(System.Int32)", "UnityEngine.Application::set_targetFrameRate");
+    }
+    if (fn) fn(fps);
+}
+
+// ------------------------------------------------- saved positions (file) --
+static std::string outDir() {
+    char buf[256] = {0};
+    FILE* f = fopen("/proc/self/cmdline", "r");
+    if (f) { size_t r = fread(buf, 1, 255, f); (void)r; fclose(f); }
+    std::string d1 = std::string("/storage/emulated/0/Android/data/") + buf;
+    std::string d2 = d1 + "/files";
+    mkdir(d1.c_str(), 0775);
+    mkdir(d2.c_str(), 0775);
+    return d2;
+}
+
+static void savePosFile() {
+    std::string path = outDir() + "/saved_pos.bin";
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) return;
+    for (int i = 0; i < 3; i++) { fwrite(&g_slotSet[i], 4, 1, f); fwrite(&g_slot[i], sizeof(Vec3), 1, f); }
+    fclose(f);
+}
+
+static void loadPosFile() {
+    std::string path = outDir() + "/saved_pos.bin";
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return;
+    for (int i = 0; i < 3; i++) {
+        int s = 0; Vec3 v = {0, 0, 0};
+        if (fread(&s, 4, 1, f) != 1 || fread(&v, sizeof(Vec3), 1, f) != 1) break;
+        g_slotSet[i] = s; g_slot[i] = v;
+    }
+    fclose(f);
+}
+
+// ----------------------------------------------------------- auto pickup ---
+static void autoPick() {
+    Vec3 p;
+    if (!getPlayerPos(&p)) return;
+    float r = (float)g_pickRange;
+    float r2 = r * r;
+    std::vector<void*> todo;
+    for (size_t i = 0; i < g_items.size(); i++) {
+        ItemRef& it = g_items[i];
+        if (it.next > g_frame) continue;
+        float dx = it.pos.x - p.x, dy = it.pos.y - p.y, dz = it.pos.z - p.z;
+        if (dx * dx + dy * dy + dz * dz <= r2) { it.next = g_frame + 240; todo.push_back(it.ptr); }
+    }
+    typedef void (*t_Pick)(void*, void*);
+    for (size_t i = 0; i < todo.size(); i++) ((t_Pick)(g_base + OFF_PICKTHIS))(todo[i], nullptr);
+}
+
+// ------------------------------------------------------------ auto panen ---
+static void harvestAll() {
+    typedef void* (*t_getFurrow)(void*, int, void*);
+    typedef bool (*t_enable)(void*, void*);
+    typedef V2I (*t_rc)(void*, int, void*);
+    typedef void (*t_pre)(void*, int, int, void*);
+    typedef void* (*t_harvest)(void*, int, int, bool*, void*);
+    typedef bool (*t_add)(void*, uint32_t, int, int*, int, bool, void*);
+    if (!g_itemInfo) return;
+    for (int fi = 0; fi < 16; fi++) {
+        void* fld = g_fields[fi].ptr;
+        if (!fld || (g_frame - g_fields[fi].frame) > 120) continue;
+        int rows = *(int*)((char*)fld + 0x54), cols = *(int*)((char*)fld + 0x58);
+        if (rows <= 0 || cols <= 0 || rows * cols > 4000) continue;
+        for (int i = 0; i < rows * cols; i++) {
+            void* fur = ((t_getFurrow)(g_base + OFF_GETFURROW))(fld, i, nullptr);
+            if (!fur) continue;
+            if (!((t_enable)(g_base + OFF_FURROWENABLE))(fur, nullptr)) continue;
+            V2I rc = ((t_rc)(g_base + OFF_FURROWRC))(fld, i, nullptr);
+            ((t_pre)(g_base + OFF_PREHARVEST))(fld, rc.x, rc.y, nullptr);
+            bool trans = false;
+            void* list = ((t_harvest)(g_base + OFF_HARVEST))(fld, rc.x, rc.y, &trans, nullptr);
+            if (!list) continue;
+            void* arr = *(void**)((char*)list + 0x10);
+            int sz = *(int*)((char*)list + 0x18);
+            if (!arr || sz <= 0 || sz > 200) continue;
+            for (int k = 0; k < sz; k++) {
+                int id = *(int*)((char*)arr + 0x20 + 4 * k);
+                int ovf = 0;
+                ((t_add)(g_base + OFF_ADDITEM))(g_itemInfo, (uint32_t)id, 1, &ovf, INV_ITEMBAG, true, nullptr);
+            }
+        }
+    }
+}
+
+static bool g_fpsApplied = false;
+static bool g_frozenSnap = false;
+
+static void doAdvance(int mode) {
+    typedef void (*t_Adv)(void*, int, int, void*);
+    int h = 0, m = 0;
+    if (mode == 1) h = 1;
+    else if (mode == 2) h = 3;
+    else if (mode == 3) {
+        if (!g_timeCtl) return;
+        float hr = *(float*)((char*)g_timeCtl + 0x20);
+        float mn = *(float*)((char*)g_timeCtl + 0x24);
+        int now = (int)hr * 60 + (int)mn;
+        int delta = (360 - now + 1440) % 1440;
+        if (delta == 0) delta = 1440;
+        h = delta / 60;
+        m = delta % 60;
+    }
+    ((t_Adv)(g_base + OFF_ADVTIME))(g_env, h, m, nullptr);
+    g_frozenSnap = false;
 }
 
 static void h_PMUpdate(void* self, float dt, void* mi) {
@@ -273,10 +507,37 @@ static void h_PMUpdate(void* self, float dt, void* mi) {
     uint32_t u = g_tpUid;
     if (u != 0) { g_tpUid = 0; doWarp(u); }
     if (g_warpPending) pollWarp();
+    int mreq = g_moneyReq;
+    if (mreq != 0 && g_itemInfo) {
+        g_moneyReq = 0;
+        typedef void (*t_AddMoney)(void*, int, void*);
+        ((t_AddMoney)(g_base + OFF_ADDMONEY))(g_itemInfo, mreq, nullptr);
+    }
+    int treq = g_timeReq;
+    if (treq != 0 && g_env) { g_timeReq = 0; doAdvance(treq); }
+    if (g_harvestReq) { g_harvestReq = 0; harvestAll(); }
+    int sv = g_saveReq;
+    if (sv >= 1 && sv <= 3) {
+        g_saveReq = 0;
+        Vec3 p;
+        if (getPlayerPos(&p)) { g_slot[sv - 1] = p; g_slotSet[sv - 1] = 1; savePosFile(); }
+    }
+    int gt = g_gotoReq;
+    if (gt >= 1 && gt <= 3) {
+        g_gotoReq = 0;
+        if (g_slotSet[gt - 1]) warpTo(g_slot[gt - 1], 0.0f);
+    }
+    if (g_pickRange > 0 && (g_frame % 8) == 0) autoPick();
+    if ((g_frame % 60) == 0) {
+        if (g_f[17] && !g_fpsApplied) { setFps(60); g_fpsApplied = true; }
+        else if (!g_f[17] && g_fpsApplied) { setFps(30); g_fpsApplied = false; }
+        else if (g_f[17]) setFps(60);
+    }
     o_PMUpdate(self, dt, mi);
 }
 
 static bool h_AddItem(void* self, uint32_t id, int num, int* overflow, int type, bool upd, void* mi) {
+    g_itemInfo = self;
     if (g_f[4] && num > 0) num = 99;
     return o_AddItem(self, id, num, overflow, type, upd, mi);
 }
@@ -287,6 +548,80 @@ static void h_SetHp(void* self, int value, void* mi) {
         if (value < cur) value = cur;
     }
     o_SetHp(self, value, mi);
+}
+
+static void h_FIInit(void* self, int index, Vec3 pos, bool fixedFlag, uint32_t id, uint32_t colony, void* e, bool fixGround, void* mi) {
+    bool found = false;
+    for (size_t i = 0; i < g_items.size(); i++) {
+        if (g_items[i].ptr == self) { g_items[i].pos = pos; g_items[i].next = 0; found = true; break; }
+    }
+    if (!found && g_items.size() < 3000) { ItemRef r; r.ptr = self; r.pos = pos; r.next = 0; g_items.push_back(r); }
+    o_FIInit(self, index, pos, fixedFlag, id, colony, e, fixGround, mi);
+}
+
+static void h_FIDestroy(void* self, void* mi) {
+    for (size_t i = 0; i < g_items.size(); i++) {
+        if (g_items[i].ptr == self) { g_items.erase(g_items.begin() + i); break; }
+    }
+    o_FIDestroy(self, mi);
+}
+
+static void h_MineUpd(void* self, float dt, void* mi) {
+    g_mine = self;
+    int n = g_floorReq;
+    if (n > 0) {
+        g_floorReq = 0;
+        typedef void (*t_SetFloor)(void*, int, void*);
+        typedef UniTask (*t_Next)(void*, bool, bool, void*);
+        ((t_SetFloor)(g_base + OFF_SETFLOOR))(self, n - 1, nullptr);
+        ((t_Next)(g_base + OFF_CREATENEXT))(self, false, true, nullptr);
+    }
+    o_MineUpd(self, dt, mi);
+}
+
+static int h_Cap(void* self, uint32_t category, void* mi) {
+    int v = o_Cap(self, category, mi);
+    if (g_f[14]) v += 60;
+    return v;
+}
+
+static void h_CropUpd(void* self, float dt, void* mi) {
+    int slot = -1;
+    for (int i = 0; i < 16; i++) {
+        if (g_fields[i].ptr == self) { slot = i; break; }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < 16; i++) {
+            if (!g_fields[i].ptr || (g_frame - g_fields[i].frame) > 600) { slot = i; break; }
+        }
+    }
+    if (slot >= 0) { g_fields[slot].ptr = self; g_fields[slot].frame = g_frame; }
+    o_CropUpd(self, dt, mi);
+}
+
+static bool h_Remove(void* self, uint32_t id, int num, int type, void* mi) {
+    if (g_f[15]) {
+        uintptr_t rva = (uintptr_t)__builtin_return_address(0) - g_base;
+        for (int i = 0; i < NKEEP; i++) {
+            if (rva >= KEEP[i].start && rva < KEEP[i].start + KEEP[i].size) return true;
+        }
+    }
+    return o_Remove(self, id, num, type, mi);
+}
+
+static void h_Dowse(void* self, float t, void* mi) {
+    if (g_f[16]) t = 100000.0f;
+    o_Dowse(self, t, mi);
+}
+
+static int h_GetHave(void* self, uint32_t id, int type, bool lv, void* mi) {
+    g_itemInfo = self;
+    return o_GetHave(self, id, type, lv, mi);
+}
+
+static void h_EnvLate(void* self, float dt, void* mi) {
+    g_env = self;
+    o_EnvLate(self, dt, mi);
 }
 
 static int g_lastFishFrame = -1000;
@@ -310,10 +645,10 @@ static void h_AnimDay(void* self, bool dirt, void* mi) {
 }
 
 // Freeze Time: tahan jam game (TimeScheduleController)
-static bool g_frozenSnap = false;
 static float g_snap[6];
 static const int SNAP_OFF[6] = {0x20, 0x24, 0x2C, 0x30, 0x34, 0x38};
 static void h_TimeLate(void* self, float dt, void* mi) {
+    g_timeCtl = self;
     if (g_f[1]) {
         if (!g_frozenSnap) {
             for (int i = 0; i < 6; i++) g_snap[i] = *(float*)((char*)self + SNAP_OFF[i]);
@@ -340,8 +675,16 @@ static void h_ApplyHit(void* self, void* mi) {
 // Kecepatan jalan pemain (hanya pemain, bukan NPC)
 static float h_Speed(void* self, void* mi) {
     float v = o_Speed(self, mi);
-    int m = g_speed;
-    if (m > 1 && *(bool*)((char*)self + 0x28)) v *= (float)m;
+    if (*(bool*)((char*)self + 0x28)) {
+        int m = g_speed;
+        if (m > 1) v *= (float)m;
+    } else {
+        int r = g_rideSpeed;
+        if (r > 1 && g_player) {
+            void* ride = *(void**)((char*)g_player + 0xA8);
+            if (ride && *(int*)((char*)ride + 0x10) != 0) v *= (float)r;
+        }
+    }
     return v;
 }
 
@@ -362,6 +705,16 @@ static void* worker(void*) {
     installHook(H_APPLYHIT, (void*)h_ApplyHit, (void**)&o_ApplyHit);
     installHook(H_SPEED, (void*)h_Speed, (void**)&o_Speed);
     installHook(H_PLUPDATE, (void*)h_PlUpdate, (void**)&o_PlUpdate);
+    installHook(H_GETHAVE, (void*)h_GetHave, (void**)&o_GetHave);
+    installHook(H_ENVLATE, (void*)h_EnvLate, (void**)&o_EnvLate);
+    installHook(H_FIINIT, (void*)h_FIInit, (void**)&o_FIInit);
+    installHook(H_FIDESTROY, (void*)h_FIDestroy, (void**)&o_FIDestroy);
+    installHook(H_MINEUPD, (void*)h_MineUpd, (void**)&o_MineUpd);
+    installHook(H_CAP, (void*)h_Cap, (void**)&o_Cap);
+    installHook(H_CROPUPD, (void*)h_CropUpd, (void**)&o_CropUpd);
+    installHook(H_REMOVE, (void*)h_Remove, (void**)&o_Remove);
+    installHook(H_DOWSE, (void*)h_Dowse, (void**)&o_Dowse);
+    loadPosFile();
     for (int f = 1; f < MAXF; f++) if (g_f[f]) setPatches(f, true);
     return nullptr;
 }
@@ -397,6 +750,40 @@ static const char* const FEATURES[] = {
     "11_Toggle_Tanpa Jebakan dan Batu Jatuh",
     "Category_Pemain",
     "12_SeekBar_Kecepatan Pemain_1_6",
+    "13_SeekBar_Kecepatan Tunggangan_1_6",
+    "Category_Uang dan Waktu",
+    "40_Button_Tambah Uang +10.000",
+    "41_Button_Tambah Uang +100.000",
+    "42_Button_Tambah Uang +1.000.000",
+    "43_Button_Maju Waktu 1 Jam",
+    "44_Button_Maju Waktu 3 Jam",
+    "45_Button_Lompat ke Pagi (06:00)",
+    "14_Toggle_Bawa Lebih Banyak Item",
+    "15_Toggle_Bibit, Pupuk dan Pakan Tidak Habis",
+    "46_Button_Panen Semua Tanaman",
+    "18_SeekBar_Jarak Auto Ambil Barang (0=mati)_0_30",
+    "Category_Tambang Plus",
+    "16_Toggle_Radar Tambang Lama",
+    "Collapse_Pilih Lantai Tambang",
+    "CollapseAdd_60_Button_Lantai 1 sampai 10 (mulai lantai 1)",
+    "CollapseAdd_61_Button_Lantai 11 sampai 20 (mulai lantai 11)",
+    "CollapseAdd_62_Button_Lantai 21 sampai 30 (mulai lantai 21)",
+    "CollapseAdd_63_Button_Lantai 31 sampai 40 (mulai lantai 31)",
+    "CollapseAdd_64_Button_Lantai 41 sampai 50 (mulai lantai 41)",
+    "CollapseAdd_65_Button_Lantai 51 sampai 60 (mulai lantai 51)",
+    "CollapseAdd_66_Button_Lantai 61 sampai 70 (mulai lantai 61)",
+    "CollapseAdd_67_Button_Lantai 71 sampai 80 (mulai lantai 71)",
+    "CollapseAdd_68_Button_Lantai 81 sampai 90 (mulai lantai 81)",
+    "CollapseAdd_69_Button_Lantai 91 sampai 100 (mulai lantai 91)",
+    "Category_Lainnya",
+    "17_Toggle_FPS 60 (coba-coba)",
+    "Collapse_Simpan Posisi (3 slot)",
+    "CollapseAdd_50_Button_Simpan Posisi 1",
+    "CollapseAdd_51_Button_Simpan Posisi 2",
+    "CollapseAdd_52_Button_Simpan Posisi 3",
+    "CollapseAdd_53_Button_Teleport ke Posisi 1",
+    "CollapseAdd_54_Button_Teleport ke Posisi 2",
+    "CollapseAdd_55_Button_Teleport ke Posisi 3",
     "Category_Teleport (tanpa loading)",
     "Collapse_Titik Utama",
     "CollapseAdd_20_Button_Rumah",
@@ -430,7 +817,7 @@ static jboolean JNICALL n_IsGameLibLoaded(JNIEnv*, jobject) { return JNI_TRUE; }
 static void JNICALL n_Init(JNIEnv* env, jobject, jobject ctx, jobject title, jobject subtitle) {
     jmethodID setText = env->GetMethodID(env->GetObjectClass(title), "setText", "(Ljava/lang/CharSequence;)V");
     env->CallVoidMethod(title, setText, env->NewStringUTF("Home Sweet Home"));
-    env->CallVoidMethod(subtitle, setText, env->NewStringUTF("mod by deepth"));
+    env->CallVoidMethod(subtitle, setText, env->NewStringUTF("mod by NS"));
     toast(env, ctx, "Mod menu siap");
 }
 
@@ -451,6 +838,37 @@ static void JNICALL n_Changes(JNIEnv* env, jclass, jobject ctx, jint featNum, js
         if (v < 1) v = 1;
         if (v > 6) v = 6;
         g_speed = v;
+    } else if (featNum >= 14 && featNum <= 17) {
+        g_f[featNum] = (b != JNI_FALSE);
+    } else if (featNum == 18) {
+        int v = value;
+        if (v < 0) v = 0;
+        if (v > 30) v = 30;
+        g_pickRange = v;
+    } else if (featNum == 46) {
+        if (!g_itemInfo || !g_pm) { toast(env, ctx, "Buka tas atau ambil satu item dulu, lalu coba lagi"); return; }
+        g_harvestReq = 1;
+    } else if (featNum >= 50 && featNum <= 52) {
+        g_saveReq = featNum - 49;
+        toast(env, ctx, "Posisi disimpan");
+    } else if (featNum >= 53 && featNum <= 55) {
+        if (!g_slotSet[featNum - 53]) { toast(env, ctx, "Slot ini masih kosong, simpan posisi dulu"); return; }
+        g_gotoReq = featNum - 52;
+    } else if (featNum >= 60 && featNum <= 69) {
+        if (!g_mine) { toast(env, ctx, "Masuk ke dalam tambang dulu"); return; }
+        g_floorReq = (featNum - 60) * 10 + 1;
+        toast(env, ctx, "Pindah lantai tambang");
+    } else if (featNum == 13) {
+        int v = value;
+        if (v < 1) v = 1;
+        if (v > 6) v = 6;
+        g_rideSpeed = v;
+    } else if (featNum >= 40 && featNum <= 42) {
+        if (!g_itemInfo) { toast(env, ctx, "Buka tas atau ambil satu item dulu, lalu coba lagi"); return; }
+        g_moneyReq = (featNum == 40) ? 10000 : (featNum == 41) ? 100000 : 1000000;
+    } else if (featNum >= 43 && featNum <= 45) {
+        if (!g_env) { toast(env, ctx, "Belum siap, masuk ke dunia game dulu"); return; }
+        g_timeReq = featNum - 42;
     } else {
         for (int i = 0; i < NTP; i++) {
             if (TP[i].feat != featNum) continue;
