@@ -48,29 +48,29 @@ static const HookDef H_DOWSE = {0x2857D3C, {0xD10143FF, 0xFD0013E8, 0xA90357FE, 
 static const HookDef H_FISHCS = {0x28E1114, {0xD10243FF, 0x6D0233ED, 0x6D032BEB, 0x6D0423E9}, "FishingController.ChangeState"};
 static const HookDef H_AHUPD = {0x26051C8, {0xA9BE57FE, 0xA9014FF4, 0xF0016415, 0xD0014994}, "AnimalHouseManager.ExternalUpdate"};
 
-#define FISH_SUCCESS 505158168
-#define INV_ITEMBAG 33554944
-#define FISH_FIGHTING 471472150
+#define FISH_SUCCESS 12
+#define INV_ITEMBAG 0
+#define FISH_FIGHTING 11
 #define OFF_RESOLVE 0x22B724C
 struct FsnEntry { int v; const char* n; };
 static const FsnEntry FSN[] = {
-    {100925952, "Wait"},
-    {134611970, "Ready"},
-    {168297988, "TipsWait"},
-    {201984006, "Tips"},
-    {235670024, "SelectBait"},
-    {269356042, "SelectPos"},
-    {303042060, "BaitAnim"},
-    {336728078, "WaitHit"},
-    {370414096, "Hit"},
-    {404100114, "CancelCasting"},
-    {437786132, "MissHit"},
-    {471472150, "Fighting"},
-    {505158168, "Success"},
-    {538844186, "SuccessLp"},
-    {2104860, "SuccessOut"},
-    {8222, "Failure"},
-    {-2147483616, "TryBackSelect"},
+    {0, "Wait"},
+    {1, "Ready"},
+    {2, "TipsWait"},
+    {3, "Tips"},
+    {4, "SelectBait"},
+    {5, "SelectPos"},
+    {6, "BaitAnim"},
+    {7, "WaitHit"},
+    {8, "Hit"},
+    {9, "CancelCasting"},
+    {10, "MissHit"},
+    {11, "Fighting"},
+    {12, "Success"},
+    {13, "SuccessLp"},
+    {14, "SuccessOut"},
+    {15, "Failure"},
+    {16, "TryBackSelect"},
 };
 #define NFSN (int)(sizeof(FSN)/sizeof(FSN[0]))
 struct KeepRange { uint32_t start; uint32_t size; };
@@ -784,7 +784,7 @@ static void h_Fight(void* self, float dt, void* mi) {
     if (g_f[7] && st != g_lastLogSt) { g_lastLogSt = st; fishLog("UpdateFighting", st); }
     if (g_f[7] && st == FISH_FIGHTING) {
         g_fightFrames++;
-        if (g_fightFrames > 90) {
+        if (g_fightFrames > 25) {
             g_fightFrames = 0;
             typedef void (*t_State)(void*, int, void*);
             ((t_State)(g_base + OFF_FISHSTATE))(self, FISH_SUCCESS, nullptr);
