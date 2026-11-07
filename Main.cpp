@@ -45,11 +45,34 @@ static const HookDef H_CAP = {0x26BD928, {0xA9BE57FE, 0xA9014FF4, 0x90015E75, 0x
 static const HookDef H_CROPUPD = {0x2615650, {0xD10103FF, 0xF9000BFE, 0xA90257F6, 0xA9034FF4}, "CropFieldController.ExternalUpdate"};
 static const HookDef H_REMOVE = {0x26BFBF8, {0xF81C0FFE, 0xA9015FF8, 0xA90257F6, 0xA9034FF4}, "ItemInfo.RemoveItem"};
 static const HookDef H_DOWSE = {0x2857D3C, {0xD10143FF, 0xFD0013E8, 0xA90357FE, 0xA9044FF4}, "DowsingMapController.DoDowSing"};
+static const HookDef H_FISHCS = {0x28E1114, {0xD10243FF, 0x6D0233ED, 0x6D032BEB, 0x6D0423E9}, "FishingController.ChangeState"};
+static const HookDef H_AHUPD = {0x26051C8, {0xA9BE57FE, 0xA9014FF4, 0xF0016415, 0xD0014994}, "AnimalHouseManager.ExternalUpdate"};
 
 #define FISH_SUCCESS 505158168
 #define INV_ITEMBAG 33554944
 #define FISH_FIGHTING 471472150
 #define OFF_RESOLVE 0x22B724C
+struct FsnEntry { int v; const char* n; };
+static const FsnEntry FSN[] = {
+    {100925952, "Wait"},
+    {134611970, "Ready"},
+    {168297988, "TipsWait"},
+    {201984006, "Tips"},
+    {235670024, "SelectBait"},
+    {269356042, "SelectPos"},
+    {303042060, "BaitAnim"},
+    {336728078, "WaitHit"},
+    {370414096, "Hit"},
+    {404100114, "CancelCasting"},
+    {437786132, "MissHit"},
+    {471472150, "Fighting"},
+    {505158168, "Success"},
+    {538844186, "SuccessLp"},
+    {2104860, "SuccessOut"},
+    {8222, "Failure"},
+    {-2147483616, "TryBackSelect"},
+};
+#define NFSN (int)(sizeof(FSN)/sizeof(FSN[0]))
 struct KeepRange { uint32_t start; uint32_t size; };
 static const KeepRange KEEP[] = {
     {0x26174E8, 384},
@@ -80,6 +103,7 @@ static const KeepRange KEEP[] = {
 #define OFF_CREATENEXT 0x25BEA64
 #define OFF_ADDITEM 0x26BE4EC
 #define OFF_GETHAVE 0x26BFEF8
+#define OFF_CLEANDIRT 0x26075D8
 
 // ---------------------------------------------------------------------------
 // Harvest Moon: Home Sweet Home - mod menu v2 (LGL Mod Menu compatible)
@@ -346,6 +370,8 @@ typedef int (*t_Cap)(void*, uint32_t, void*);
 typedef void (*t_CropUpd)(void*, float, void*);
 typedef bool (*t_Remove)(void*, uint32_t, int, int, void*);
 typedef void (*t_Dowse)(void*, float, void*);
+typedef void (*t_FishCS)(void*, int, void*);
+typedef void (*t_AHUpd)(void*, float, void*);
 static t_PMUpdate o_PMUpdate = nullptr;
 static t_AddItem o_AddItem = nullptr;
 static t_SetHp o_SetHp = nullptr;
@@ -364,6 +390,8 @@ static t_Cap o_Cap = nullptr;
 static t_CropUpd o_CropUpd = nullptr;
 static t_Remove o_Remove = nullptr;
 static t_Dowse o_Dowse = nullptr;
+static t_FishCS o_FishCS = nullptr;
+static t_AHUpd o_AHUpd = nullptr;
 
 static void h_PlUpdate(void* self, void* mi) {
     g_player = self;
@@ -508,6 +536,84 @@ static void harvestAll() {
     }
 }
 
+// ------------------------------------------------------------ fish log ----
+static int g_fishLogCount = 0;
+static const char* fishName(int st) {
+    for (int i = 0; i < NFSN; i++) if (FSN[i].v == st) return FSN[i].n;
+    return "?";
+}
+static void fishLog(const char* tag, int st) {
+    if (g_fishLogCount > 600) return;
+    g_fishLogCount++;
+    std::string path = outDir() + "/fish_log.txt";
+    FILE* f = fopen(path.c_str(), "a");
+    if (!f) return;
+    fprintf(f, "%d\t%s\t%d\t%s\n", g_frame, tag, st, fishName(st));
+    fclose(f);
+}
+
+// ------------------------------------------------- bersihkan kompos kandang -
+static void* g_ahMgr = nullptr;
+static int g_ahFrame = -1000;
+static volatile int g_dirtReq = 0;
+
+static int dirtCount(void* impl) {
+    void* data = *(void**)((char*)impl + 0x78);
+    if (!data) return 0;
+    void* list = *(void**)((char*)data + 0x20);
+    if (!list) return 0;
+    int n = *(int*)((char*)list + 0x18);
+    return (n < 0 || n > 500) ? 0 : n;
+}
+
+static void cleanAllDirt() {
+    if (!g_ahMgr || (g_frame - g_ahFrame) > 120) return;
+    void* impl = *(void**)((char*)g_ahMgr + 0x30);
+    if (!impl) return;
+    void* dirtPos = *(void**)((char*)impl + 0x68);
+    if (!dirtPos) return;
+    int total = dirtCount(impl);
+    if (total <= 0) return;
+    typedef void* (*t_goTr)(void*);
+    typedef int (*t_cnt)(void*);
+    typedef void* (*t_child)(void*, int);
+    typedef void* (*t_compGo)(void*);
+    typedef bool (*t_act)(void*);
+    typedef void (*t_clean)(void*, void*, void*);
+    t_goTr goTr = (t_goTr)resolveIcall("UnityEngine.GameObject::get_transform()", "UnityEngine.GameObject::get_transform");
+    t_cnt cnt = (t_cnt)resolveIcall("UnityEngine.Transform::get_childCount()", "UnityEngine.Transform::get_childCount");
+    t_child child = (t_child)resolveIcall("UnityEngine.Transform::GetChild(System.Int32)", "UnityEngine.Transform::GetChild");
+    t_compGo compGo = (t_compGo)resolveIcall("UnityEngine.Component::get_gameObject()", "UnityEngine.Component::get_gameObject");
+    t_act act = (t_act)resolveIcall("UnityEngine.GameObject::get_activeSelf()", "UnityEngine.GameObject::get_activeSelf");
+    if (!goTr || !cnt || !child || !compGo || !act) return;
+    void* tr = goTr(dirtPos);
+    if (!tr) return;
+    std::vector<void*> gos;
+    int n = cnt(tr);
+    for (int i = 0; i < n && i < 500; i++) {
+        void* c = child(tr, i);
+        if (!c) continue;
+        int m = cnt(c);
+        if (m > 0) {
+            for (int j = 0; j < m && j < 20; j++) {
+                void* cc = child(c, j);
+                void* go = cc ? compGo(cc) : nullptr;
+                if (go && act(go)) gos.push_back(go);
+            }
+        } else {
+            void* go = compGo(c);
+            if (go && act(go)) gos.push_back(go);
+        }
+    }
+    int done = 0;
+    for (size_t i = 0; i < gos.size() && done < total; i++) {
+        int before = dirtCount(impl);
+        if (before <= 0) break;
+        ((t_clean)(g_base + OFF_CLEANDIRT))(impl, gos[i], nullptr);
+        done++;
+    }
+}
+
 static bool g_fpsApplied = false;
 static bool g_frozenSnap = false;
 
@@ -551,6 +657,7 @@ static void h_PMUpdate(void* self, float dt, void* mi) {
         ((t_ReqFT2)(g_base + OFF_REQFT))(self, fu, nullptr);
     }
     if (g_harvestReq) { g_harvestReq = 0; harvestAll(); }
+    if (g_dirtReq) { g_dirtReq = 0; cleanAllDirt(); }
     int sv = g_saveReq;
     if (sv >= 1 && sv <= 3) {
         g_saveReq = 0;
@@ -649,6 +756,17 @@ static void h_Dowse(void* self, float t, void* mi) {
     o_Dowse(self, t, mi);
 }
 
+static void h_FishCS(void* self, int state, void* mi) {
+    if (g_f[7]) fishLog("ChangeState", state);
+    o_FishCS(self, state, mi);
+}
+
+static void h_AHUpd(void* self, float dt, void* mi) {
+    g_ahMgr = self;
+    g_ahFrame = g_frame;
+    o_AHUpd(self, dt, mi);
+}
+
 static int h_GetHave(void* self, uint32_t id, int type, bool lv, void* mi) {
     g_itemInfo = self;
     return o_GetHave(self, id, type, lv, mi);
@@ -660,8 +778,10 @@ static void h_EnvLate(void* self, float dt, void* mi) {
 }
 
 static int g_fightFrames = 0;
+static int g_lastLogSt = 0;
 static void h_Fight(void* self, float dt, void* mi) {
     int st = *(int*)((char*)self + 0x58);
+    if (g_f[7] && st != g_lastLogSt) { g_lastLogSt = st; fishLog("UpdateFighting", st); }
     if (g_f[7] && st == FISH_FIGHTING) {
         g_fightFrames++;
         if (g_fightFrames > 90) {
@@ -755,6 +875,8 @@ static void* worker(void*) {
     installHook(H_CROPUPD, (void*)h_CropUpd, (void**)&o_CropUpd);
     installHook(H_REMOVE, (void*)h_Remove, (void**)&o_Remove);
     installHook(H_DOWSE, (void*)h_Dowse, (void**)&o_Dowse);
+    installHook(H_FISHCS, (void*)h_FishCS, (void**)&o_FishCS);
+    installHook(H_AHUPD, (void*)h_AHUpd, (void**)&o_AHUpd);
     loadPosFile();
     for (int f = 1; f < MAXF; f++) if (g_f[f]) setPatches(f, true);
     return nullptr;
@@ -777,25 +899,25 @@ static jobjectArray makeArray(JNIEnv* env, const char* const* items, int n) {
 
 static const char* const FEATURES[] = {
     "Category_Mod Menu",
-    "Collapse_Pertanian",
+    "Collapse_Kebutuhan Harian",
     "CollapseAdd_3_Toggle_Auto Watered Crop",
     "CollapseAdd_6_Toggle_Crop Grew Overnight",
     "CollapseAdd_5_Toggle_Max Quality Crops",
     "CollapseAdd_46_Button_Panen Semua Tanaman",
     "CollapseAdd_15_Toggle_Bibit, Pupuk dan Pakan Tidak Habis",
-    "Collapse_Item dan Tas",
     "CollapseAdd_4_Toggle_Get Item x99",
     "CollapseAdd_14_Toggle_Bawa Lebih Banyak Item (tambah slot tas)",
     "CollapseAdd_18_SeekBar_Jarak Auto Ambil Barang (0=mati)_0_30",
+    "CollapseAdd_9_Toggle_Unlimited Gifts/Talks",
     "Collapse_Pemain",
     "CollapseAdd_2_Toggle_Infinite Stamina",
     "CollapseAdd_1_Toggle_Freeze Time",
     "CollapseAdd_12_SeekBar_Kecepatan Pemain_1_6",
     "CollapseAdd_13_SeekBar_Kecepatan Tunggangan_1_6",
-    "Collapse_Hewan, Pancing dan Warga",
+    "Collapse_Peternakan",
     "CollapseAdd_8_Toggle_Animal Care",
     "CollapseAdd_7_Toggle_Easy Fishing (Auto Pull)",
-    "CollapseAdd_9_Toggle_Unlimited Gifts/Talks",
+    "CollapseAdd_47_Button_Bersihkan Semua Kompos Kandang",
     "Collapse_Tambang",
     "CollapseAdd_10_Toggle_Batu Sekali Pukul",
     "CollapseAdd_11_Toggle_Tanpa Jebakan dan Batu Jatuh",
@@ -821,18 +943,12 @@ static const char* const FEATURES[] = {
     "CollapseAdd_20_Button_Rumah",
     "CollapseAdd_21_Button_Tengah Desa",
     "CollapseAdd_22_Button_Balai Desa",
-    "CollapseAdd_23_Button_Toko Hewan (bibit dan kemah)",
-    "CollapseAdd_24_Button_Restoran (pantai)",
-    "CollapseAdd_25_Button_Dermaga (rumah nelayan)",
     "CollapseAdd_26_Button_Tambang (pintu luar)",
     "CollapseAdd_27_Button_Puncak Gunung",
     "CollapseAdd_28_Button_Pemandian Air Panas",
     "CollapseAdd_30_Button_Lomba Pancing 1",
     "CollapseAdd_31_Button_Lomba Pancing 2",
     "CollapseAdd_32_Button_Lomba Pancing 3",
-    "CollapseAdd_33_Button_Rumah Petani Besar",
-    "CollapseAdd_34_Button_Toko Umum",
-    "CollapseAdd_35_Button_Toko Suvenir",
     "Collapse_Teleport Dalam Ruangan",
     "CollapseAdd_70_Button_Balai Desa",
     "CollapseAdd_71_Button_Kantor Berita",
@@ -900,6 +1016,10 @@ static void JNICALL n_Changes(JNIEnv* env, jclass, jobject ctx, jint featNum, js
     } else if (featNum == 46) {
         if (!g_itemInfo || !g_pm) { toast(env, ctx, "Buka tas atau ambil satu item dulu, lalu coba lagi"); return; }
         g_harvestReq = 1;
+    } else if (featNum == 47) {
+        if (!g_ahMgr || (g_frame - g_ahFrame) > 120) { toast(env, ctx, "Masuk ke dalam kandang dulu"); return; }
+        g_dirtReq = 1;
+        toast(env, ctx, "Membersihkan kompos kandang");
     } else if (featNum >= 50 && featNum <= 52) {
         g_saveReq = featNum - 49;
         toast(env, ctx, "Posisi disimpan");
