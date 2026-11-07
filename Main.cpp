@@ -48,6 +48,7 @@ static const HookDef H_DOWSE = {0x2857D3C, {0xD10143FF, 0xFD0013E8, 0xA90357FE, 
 
 #define FISH_SUCCESS 505158168
 #define INV_ITEMBAG 33554944
+#define FISH_FIGHTING 471472150
 #define OFF_RESOLVE 0x22B724C
 struct KeepRange { uint32_t start; uint32_t size; };
 static const KeepRange KEEP[] = {
@@ -78,6 +79,7 @@ static const KeepRange KEEP[] = {
 #define OFF_SETFLOOR 0x25BE944
 #define OFF_CREATENEXT 0x25BEA64
 #define OFF_ADDITEM 0x26BE4EC
+#define OFF_GETHAVE 0x26BFEF8
 
 // ---------------------------------------------------------------------------
 // Harvest Moon: Home Sweet Home - mod menu v2 (LGL Mod Menu compatible)
@@ -249,6 +251,23 @@ static const TpPoint TP[] = {
     {35, 2103, "Toko Suvenir"},
 };
 #define NTP ((int)(sizeof(TP) / sizeof(TP[0])))
+
+static const TpPoint IN[] = {
+    {70, 1101, "Balai Desa (dalam)"},
+    {71, 1102, "Kantor Berita (dalam)"},
+    {72, 1103, "Toko Suvenir (dalam)"},
+    {73, 1104, "Rumah Nelayan (dalam)"},
+    {74, 1105, "Restoran (dalam)"},
+    {75, 1106, "Toko Umum (dalam)"},
+    {76, 1107, "Toko Kerajinan dan Pakaian (dalam)"},
+    {77, 1108, "Toko Hewan (dalam)"},
+    {78, 1109, "Kandang Toko Hewan (dalam)"},
+    {79, 1110, "Rumah Petani Besar (dalam)"},
+    {80, 1111, "Rumah Penjaga Tambang (dalam)"},
+    {81, 1112, "Balai Desa (pintu belakang)"},
+};
+#define NIN ((int)(sizeof(IN) / sizeof(IN[0])))
+static volatile uint32_t g_ftUid = 0;
 
 static bool g_warpPending = false;
 static int g_warpFrames = 0;
@@ -441,7 +460,17 @@ static void autoPick() {
         if (dx * dx + dy * dy + dz * dz <= r2) { it.next = g_frame + 240; todo.push_back(it.ptr); }
     }
     typedef void (*t_Pick)(void*, void*);
-    for (size_t i = 0; i < todo.size(); i++) ((t_Pick)(g_base + OFF_PICKTHIS))(todo[i], nullptr);
+    typedef bool (*t_add)(void*, uint32_t, int, int*, int, bool, void*);
+    typedef int (*t_have)(void*, uint32_t, int, bool, void*);
+    if (!g_itemInfo) return;
+    for (size_t i = 0; i < todo.size(); i++) {
+        uint32_t id = *(uint32_t*)((char*)todo[i] + 0x50);
+        int before = ((t_have)(g_base + OFF_GETHAVE))(g_itemInfo, id, INV_ITEMBAG, false, nullptr);
+        int ovf = 0;
+        ((t_add)(g_base + OFF_ADDITEM))(g_itemInfo, id, 1, &ovf, INV_ITEMBAG, true, nullptr);
+        int after = ((t_have)(g_base + OFF_GETHAVE))(g_itemInfo, id, INV_ITEMBAG, false, nullptr);
+        if (after > before) ((t_Pick)(g_base + OFF_PICKTHIS))(todo[i], nullptr);
+    }
 }
 
 // ------------------------------------------------------------ auto panen ---
@@ -515,6 +544,12 @@ static void h_PMUpdate(void* self, float dt, void* mi) {
     }
     int treq = g_timeReq;
     if (treq != 0 && g_env) { g_timeReq = 0; doAdvance(treq); }
+    if (g_ftUid != 0) {
+        uint32_t fu = g_ftUid;
+        g_ftUid = 0;
+        typedef void (*t_ReqFT2)(void*, uint32_t, void*);
+        ((t_ReqFT2)(g_base + OFF_REQFT))(self, fu, nullptr);
+    }
     if (g_harvestReq) { g_harvestReq = 0; harvestAll(); }
     int sv = g_saveReq;
     if (sv >= 1 && sv <= 3) {
@@ -624,13 +659,19 @@ static void h_EnvLate(void* self, float dt, void* mi) {
     o_EnvLate(self, dt, mi);
 }
 
-static int g_lastFishFrame = -1000;
+static int g_fightFrames = 0;
 static void h_Fight(void* self, float dt, void* mi) {
-    if (g_f[7] && (g_frame - g_lastFishFrame) > 60) {
-        g_lastFishFrame = g_frame;
-        typedef void (*t_State)(void*, int, void*);
-        ((t_State)(g_base + OFF_FISHSTATE))(self, FISH_SUCCESS, nullptr);
-        return;
+    int st = *(int*)((char*)self + 0x58);
+    if (g_f[7] && st == FISH_FIGHTING) {
+        g_fightFrames++;
+        if (g_fightFrames > 90) {
+            g_fightFrames = 0;
+            typedef void (*t_State)(void*, int, void*);
+            ((t_State)(g_base + OFF_FISHSTATE))(self, FISH_SUCCESS, nullptr);
+            return;
+        }
+    } else {
+        g_fightFrames = 0;
     }
     o_Fight(self, dt, mi);
 }
@@ -736,35 +777,29 @@ static jobjectArray makeArray(JNIEnv* env, const char* const* items, int n) {
 
 static const char* const FEATURES[] = {
     "Category_Mod Menu",
-    "1_Toggle_Freeze Time",
-    "2_Toggle_Infinite Stamina",
-    "3_Toggle_Auto Watered Crop",
-    "4_Toggle_Get Item x99",
-    "5_Toggle_Max Quality Crops",
-    "6_Toggle_Crop Grew Overnight",
-    "7_Toggle_Easy Fishing (Auto Pull)",
-    "8_Toggle_Animal Care",
-    "9_Toggle_Unlimited Gifts/Talks",
-    "Category_Tambang",
-    "10_Toggle_Batu Sekali Pukul",
-    "11_Toggle_Tanpa Jebakan dan Batu Jatuh",
-    "Category_Pemain",
-    "12_SeekBar_Kecepatan Pemain_1_6",
-    "13_SeekBar_Kecepatan Tunggangan_1_6",
-    "Category_Uang dan Waktu",
-    "40_Button_Tambah Uang +10.000",
-    "41_Button_Tambah Uang +100.000",
-    "42_Button_Tambah Uang +1.000.000",
-    "43_Button_Maju Waktu 1 Jam",
-    "44_Button_Maju Waktu 3 Jam",
-    "45_Button_Lompat ke Pagi (06:00)",
-    "14_Toggle_Bawa Lebih Banyak Item",
-    "15_Toggle_Bibit, Pupuk dan Pakan Tidak Habis",
-    "46_Button_Panen Semua Tanaman",
-    "18_SeekBar_Jarak Auto Ambil Barang (0=mati)_0_30",
-    "Category_Tambang Plus",
-    "16_Toggle_Radar Tambang Lama",
-    "Collapse_Pilih Lantai Tambang",
+    "Collapse_Pertanian",
+    "CollapseAdd_3_Toggle_Auto Watered Crop",
+    "CollapseAdd_6_Toggle_Crop Grew Overnight",
+    "CollapseAdd_5_Toggle_Max Quality Crops",
+    "CollapseAdd_46_Button_Panen Semua Tanaman",
+    "CollapseAdd_15_Toggle_Bibit, Pupuk dan Pakan Tidak Habis",
+    "Collapse_Item dan Tas",
+    "CollapseAdd_4_Toggle_Get Item x99",
+    "CollapseAdd_14_Toggle_Bawa Lebih Banyak Item (tambah slot tas)",
+    "CollapseAdd_18_SeekBar_Jarak Auto Ambil Barang (0=mati)_0_30",
+    "Collapse_Pemain",
+    "CollapseAdd_2_Toggle_Infinite Stamina",
+    "CollapseAdd_1_Toggle_Freeze Time",
+    "CollapseAdd_12_SeekBar_Kecepatan Pemain_1_6",
+    "CollapseAdd_13_SeekBar_Kecepatan Tunggangan_1_6",
+    "Collapse_Hewan, Pancing dan Warga",
+    "CollapseAdd_8_Toggle_Animal Care",
+    "CollapseAdd_7_Toggle_Easy Fishing (Auto Pull)",
+    "CollapseAdd_9_Toggle_Unlimited Gifts/Talks",
+    "Collapse_Tambang",
+    "CollapseAdd_10_Toggle_Batu Sekali Pukul",
+    "CollapseAdd_11_Toggle_Tanpa Jebakan dan Batu Jatuh",
+    "CollapseAdd_16_Toggle_Radar Tambang Lama",
     "CollapseAdd_60_Button_Lantai 1 sampai 10 (mulai lantai 1)",
     "CollapseAdd_61_Button_Lantai 11 sampai 20 (mulai lantai 11)",
     "CollapseAdd_62_Button_Lantai 21 sampai 30 (mulai lantai 21)",
@@ -775,17 +810,14 @@ static const char* const FEATURES[] = {
     "CollapseAdd_67_Button_Lantai 71 sampai 80 (mulai lantai 71)",
     "CollapseAdd_68_Button_Lantai 81 sampai 90 (mulai lantai 81)",
     "CollapseAdd_69_Button_Lantai 91 sampai 100 (mulai lantai 91)",
-    "Category_Lainnya",
-    "17_Toggle_FPS 60 (coba-coba)",
-    "Collapse_Simpan Posisi (3 slot)",
-    "CollapseAdd_50_Button_Simpan Posisi 1",
-    "CollapseAdd_51_Button_Simpan Posisi 2",
-    "CollapseAdd_52_Button_Simpan Posisi 3",
-    "CollapseAdd_53_Button_Teleport ke Posisi 1",
-    "CollapseAdd_54_Button_Teleport ke Posisi 2",
-    "CollapseAdd_55_Button_Teleport ke Posisi 3",
-    "Category_Teleport (tanpa loading)",
-    "Collapse_Titik Utama",
+    "Collapse_Uang dan Waktu",
+    "CollapseAdd_40_Button_Tambah Uang +10.000",
+    "CollapseAdd_41_Button_Tambah Uang +100.000",
+    "CollapseAdd_42_Button_Tambah Uang +1.000.000",
+    "CollapseAdd_43_Button_Maju Waktu 1 Jam",
+    "CollapseAdd_44_Button_Maju Waktu 3 Jam",
+    "CollapseAdd_45_Button_Lompat ke Pagi (06:00)",
+    "Collapse_Teleport Luar Ruangan",
     "CollapseAdd_20_Button_Rumah",
     "CollapseAdd_21_Button_Tengah Desa",
     "CollapseAdd_22_Button_Balai Desa",
@@ -795,13 +827,33 @@ static const char* const FEATURES[] = {
     "CollapseAdd_26_Button_Tambang (pintu luar)",
     "CollapseAdd_27_Button_Puncak Gunung",
     "CollapseAdd_28_Button_Pemandian Air Panas",
-    "Collapse_Titik Tambahan (cari danau)",
     "CollapseAdd_30_Button_Lomba Pancing 1",
     "CollapseAdd_31_Button_Lomba Pancing 2",
     "CollapseAdd_32_Button_Lomba Pancing 3",
     "CollapseAdd_33_Button_Rumah Petani Besar",
     "CollapseAdd_34_Button_Toko Umum",
     "CollapseAdd_35_Button_Toko Suvenir",
+    "Collapse_Teleport Dalam Ruangan",
+    "CollapseAdd_70_Button_Balai Desa",
+    "CollapseAdd_71_Button_Kantor Berita",
+    "CollapseAdd_72_Button_Toko Suvenir",
+    "CollapseAdd_73_Button_Rumah Nelayan",
+    "CollapseAdd_74_Button_Restoran",
+    "CollapseAdd_75_Button_Toko Umum",
+    "CollapseAdd_76_Button_Toko Kerajinan dan Pakaian",
+    "CollapseAdd_77_Button_Toko Hewan",
+    "CollapseAdd_78_Button_Kandang Toko Hewan",
+    "CollapseAdd_79_Button_Rumah Petani Besar",
+    "CollapseAdd_80_Button_Rumah Penjaga Tambang",
+    "CollapseAdd_81_Button_Balai Desa (pintu belakang)",
+    "Collapse_Lainnya",
+    "CollapseAdd_17_Toggle_FPS 60 (coba-coba)",
+    "CollapseAdd_50_Button_Simpan Posisi 1",
+    "CollapseAdd_51_Button_Simpan Posisi 2",
+    "CollapseAdd_52_Button_Simpan Posisi 3",
+    "CollapseAdd_53_Button_Teleport ke Posisi 1",
+    "CollapseAdd_54_Button_Teleport ke Posisi 2",
+    "CollapseAdd_55_Button_Teleport ke Posisi 3",
 };
 
 static const char* const SETTINGS[] = {
@@ -870,6 +922,13 @@ static void JNICALL n_Changes(JNIEnv* env, jclass, jobject ctx, jint featNum, js
         if (!g_env) { toast(env, ctx, "Belum siap, masuk ke dunia game dulu"); return; }
         g_timeReq = featNum - 42;
     } else {
+        for (int i = 0; i < NIN; i++) {
+            if (IN[i].feat != featNum) continue;
+            if (!g_pm) { toast(env, ctx, "Teleport belum siap, masuk ke dunia game dulu"); return; }
+            g_ftUid = IN[i].uid;
+            toast(env, ctx, IN[i].label);
+            return;
+        }
         for (int i = 0; i < NTP; i++) {
             if (TP[i].feat != featNum) continue;
             if (!g_pm) { toast(env, ctx, "Teleport belum siap, masuk ke dunia game dulu"); return; }
