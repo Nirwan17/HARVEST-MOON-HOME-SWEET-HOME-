@@ -47,7 +47,10 @@ static const HookDef H_REMOVE = {0x26BFBF8, {0xF81C0FFE, 0xA9015FF8, 0xA90257F6,
 static const HookDef H_DOWSE = {0x2857D3C, {0xD10143FF, 0xFD0013E8, 0xA90357FE, 0xA9044FF4}, "DowsingMapController.DoDowSing"};
 static const HookDef H_FISHCS = {0x28E1114, {0xD10243FF, 0x6D0233ED, 0x6D032BEB, 0x6D0423E9}, "FishingController.ChangeState"};
 static const HookDef H_AHUPD = {0x26051C8, {0xA9BE57FE, 0xA9014FF4, 0xF0016415, 0xD0014994}, "AnimalHouseManager.ExternalUpdate"};
+static const HookDef H_ADDBAG = {0x26C24E0, {0xF81C0FFE, 0xA9015FF8, 0xA90257F6, 0xA9034FF4}, "ItemInfo.AddItemToBagImpl"};
 
+#define GETFISH_START 0x28E67D8
+#define GETFISH_SIZE 280
 #define FISH_SUCCESS 12
 #define INV_ITEMBAG 0
 #define FISH_FIGHTING 11
@@ -104,6 +107,7 @@ static const KeepRange KEEP[] = {
 #define OFF_ADDITEM 0x26BE4EC
 #define OFF_GETHAVE 0x26BFEF8
 #define OFF_CLEANDIRT 0x26075D8
+#define OFF_GREATQ 0x26C2B0C
 
 // ---------------------------------------------------------------------------
 // Harvest Moon: Home Sweet Home - mod menu v2 (LGL Mod Menu compatible)
@@ -372,6 +376,7 @@ typedef bool (*t_Remove)(void*, uint32_t, int, int, void*);
 typedef void (*t_Dowse)(void*, float, void*);
 typedef void (*t_FishCS)(void*, int, void*);
 typedef void (*t_AHUpd)(void*, float, void*);
+typedef int (*t_AddBag)(uint32_t, int, bool, bool, bool, void*);
 static t_PMUpdate o_PMUpdate = nullptr;
 static t_AddItem o_AddItem = nullptr;
 static t_SetHp o_SetHp = nullptr;
@@ -392,6 +397,7 @@ static t_Remove o_Remove = nullptr;
 static t_Dowse o_Dowse = nullptr;
 static t_FishCS o_FishCS = nullptr;
 static t_AHUpd o_AHUpd = nullptr;
+static t_AddBag o_AddBag = nullptr;
 
 static void h_PlUpdate(void* self, void* mi) {
     g_player = self;
@@ -585,6 +591,8 @@ static void cleanAllDirt() {
     t_child child = (t_child)resolveIcall("UnityEngine.Transform::GetChild(System.Int32)", "UnityEngine.Transform::GetChild");
     t_compGo compGo = (t_compGo)resolveIcall("UnityEngine.Component::get_gameObject()", "UnityEngine.Component::get_gameObject");
     t_act act = (t_act)resolveIcall("UnityEngine.GameObject::get_activeSelf()", "UnityEngine.GameObject::get_activeSelf");
+    typedef void (*t_setAct)(void*, bool);
+    t_setAct setAct = (t_setAct)resolveIcall("UnityEngine.GameObject::SetActive(System.Boolean)", "UnityEngine.GameObject::SetActive");
     if (!goTr || !cnt || !child || !compGo || !act) return;
     void* tr = goTr(dirtPos);
     if (!tr) return;
@@ -610,6 +618,7 @@ static void cleanAllDirt() {
         int before = dirtCount(impl);
         if (before <= 0) break;
         ((t_clean)(g_base + OFF_CLEANDIRT))(impl, gos[i], nullptr);
+        if (setAct) setAct(gos[i], false);
         done++;
     }
 }
@@ -761,6 +770,18 @@ static void h_FishCS(void* self, int state, void* mi) {
     o_FishCS(self, state, mi);
 }
 
+static int h_AddBag(uint32_t id, int count, bool noticeT, bool showLog, bool playSe, void* mi) {
+    if (g_f[19]) {
+        uintptr_t rva = (uintptr_t)__builtin_return_address(0) - g_base;
+        if (rva >= GETFISH_START && rva < GETFISH_START + GETFISH_SIZE) {
+            typedef uint32_t (*t_great)(uint32_t, void*);
+            uint32_t g = ((t_great)(g_base + OFF_GREATQ))(id, nullptr);
+            if (g != 0 && g != id) id = g;
+        }
+    }
+    return o_AddBag(id, count, noticeT, showLog, playSe, mi);
+}
+
 static void h_AHUpd(void* self, float dt, void* mi) {
     g_ahMgr = self;
     g_ahFrame = g_frame;
@@ -877,6 +898,7 @@ static void* worker(void*) {
     installHook(H_DOWSE, (void*)h_Dowse, (void**)&o_Dowse);
     installHook(H_FISHCS, (void*)h_FishCS, (void**)&o_FishCS);
     installHook(H_AHUPD, (void*)h_AHUpd, (void**)&o_AHUpd);
+    installHook(H_ADDBAG, (void*)h_AddBag, (void**)&o_AddBag);
     loadPosFile();
     for (int f = 1; f < MAXF; f++) if (g_f[f]) setPatches(f, true);
     return nullptr;
@@ -917,6 +939,7 @@ static const char* const FEATURES[] = {
     "Collapse_Peternakan",
     "CollapseAdd_8_Toggle_Animal Care",
     "CollapseAdd_7_Toggle_Easy Fishing (Auto Pull)",
+    "CollapseAdd_19_Toggle_Ikan Selalu Kualitas Maksimal",
     "CollapseAdd_47_Button_Bersihkan Semua Kompos Kandang",
     "Collapse_Tambang",
     "CollapseAdd_10_Toggle_Batu Sekali Pukul",
@@ -1006,7 +1029,7 @@ static void JNICALL n_Changes(JNIEnv* env, jclass, jobject ctx, jint featNum, js
         if (v < 1) v = 1;
         if (v > 6) v = 6;
         g_speed = v;
-    } else if (featNum >= 14 && featNum <= 17) {
+    } else if ((featNum >= 14 && featNum <= 17) || featNum == 19) {
         g_f[featNum] = (b != JNI_FALSE);
     } else if (featNum == 18) {
         int v = value;
