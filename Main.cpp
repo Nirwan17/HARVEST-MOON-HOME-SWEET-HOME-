@@ -21,10 +21,8 @@ static const PatchDef PATCHES[] = {
     {8, 0x2740C74, {0xF81D0FFE, 0xA90157F6}, {0xD65F03C0, 0xD65F03C0}, "AnimalData.RunAway"},
     {9, 0x2861EAC, {0xA9BF4FFE, 0xAA0003F3}, {0x52800000, 0xD65F03C0}, "NpcInfo.GetGift"},
     {9, 0x2861F34, {0xA9BF4FFE, 0xAA0003F3}, {0x52800000, 0xD65F03C0}, "NpcInfo.GetTalked"},
-    {11, 0x25ECF2C, {0xA9BF4FFE, 0xB9402408}, {0xD65F03C0, 0xD65F03C0}, "MineTrapHole.ApplyCellHit"},
-    {11, 0x25BDFB8, {0xD10243FF, 0xA90757FE}, {0xD65F03C0, 0xD65F03C0}, "MineFallStone.StartHitFallStone"},
 };
-#define NPATCH 8
+#define NPATCH 6
 
 struct HookDef { uint32_t rva; uint32_t exp[4]; const char* name; };
 static const HookDef H_PMUPDATE = {0x28B6194, {0xF81C0FFE, 0xA9015FF8, 0xA90257F6, 0xA9034FF4}, "PartMapManager.ExternalUpdate"};
@@ -48,6 +46,7 @@ static const HookDef H_DOWSE = {0x2857D3C, {0xD10143FF, 0xFD0013E8, 0xA90357FE, 
 static const HookDef H_FISHCS = {0x28E1114, {0xD10243FF, 0x6D0233ED, 0x6D032BEB, 0x6D0423E9}, "FishingController.ChangeState"};
 static const HookDef H_AHUPD = {0x26051C8, {0xA9BE57FE, 0xA9014FF4, 0xF0016415, 0xD0014994}, "AnimalHouseManager.ExternalUpdate"};
 static const HookDef H_ADDBAG = {0x26C24E0, {0xF81C0FFE, 0xA9015FF8, 0xA90257F6, 0xA9034FF4}, "ItemInfo.AddItemToBagImpl"};
+static const HookDef H_MSGGROUP = {0x28CCAF0, {0xD10143FF, 0xF90013FE, 0xA90357F6, 0xA9044FF4}, "MessageManager.GetMessageGroup"};
 
 #define GETFISH_START 0x28E67D8
 #define GETFISH_SIZE 280
@@ -82,6 +81,7 @@ static const KeepRange KEEP[] = {
     {0x2617790, 564},
     {0x26183CC, 200},
     {0x28EFD08, 272},
+    {0x28E1114, 5012},
 };
 #define NKEEP (int)(sizeof(KEEP)/sizeof(KEEP[0]))
 #define OFF_GETFT 0x2566BB0
@@ -108,6 +108,13 @@ static const KeepRange KEEP[] = {
 #define OFF_GETHAVE 0x26BFEF8
 #define OFF_CLEANDIRT 0x26075D8
 #define OFF_GREATQ 0x26C2B0C
+#define OFF_GETITEMACC 0x2567588
+#define OFF_ITEMNAME 0x2511C9C
+#define OFF_ITEMCAT 0x2511EAC
+#define OFF_ITEMSUB 0x2511F30
+#define OFF_ITEMKIND 0x2511FB4
+#define OFF_ITEMSELL 0x2512608
+#define OFF_GETMSG 0x28CE754
 
 // ---------------------------------------------------------------------------
 // Harvest Moon: Home Sweet Home - mod menu v2 (LGL Mod Menu compatible)
@@ -377,6 +384,7 @@ typedef void (*t_Dowse)(void*, float, void*);
 typedef void (*t_FishCS)(void*, int, void*);
 typedef void (*t_AHUpd)(void*, float, void*);
 typedef int (*t_AddBag)(uint32_t, int, bool, bool, bool, void*);
+typedef void* (*t_MsgGroup)(void*, int, void*);
 static t_PMUpdate o_PMUpdate = nullptr;
 static t_AddItem o_AddItem = nullptr;
 static t_SetHp o_SetHp = nullptr;
@@ -398,6 +406,7 @@ static t_Dowse o_Dowse = nullptr;
 static t_FishCS o_FishCS = nullptr;
 static t_AHUpd o_AHUpd = nullptr;
 static t_AddBag o_AddBag = nullptr;
+static t_MsgGroup o_MsgGroup = nullptr;
 
 static void h_PlUpdate(void* self, void* mi) {
     g_player = self;
@@ -542,6 +551,90 @@ static void harvestAll() {
     }
 }
 
+// ------------------------------------------------------------- item list ---
+static std::string utf16ToUtf8(void* s) {
+    std::string r;
+    if (!s) return r;
+    int len = *(int*)((char*)s + 0x10);
+    if (len < 0 || len > 300) return r;
+    const uint16_t* c = (const uint16_t*)((char*)s + 0x14);
+    for (int i = 0; i < len; i++) {
+        uint32_t ch = c[i];
+        if (ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
+        if (ch < 0x80) r += (char)ch;
+        else if (ch < 0x800) { r += (char)(0xC0 | (ch >> 6)); r += (char)(0x80 | (ch & 0x3F)); }
+        else { r += (char)(0xE0 | (ch >> 12)); r += (char)(0x80 | ((ch >> 6) & 0x3F)); r += (char)(0x80 | (ch & 0x3F)); }
+    }
+    return r;
+}
+
+static void* g_msgMgr = nullptr;
+static bool g_itemListDone = false;
+static bool g_itemNamesDone = false;
+static std::vector<uint32_t> g_itemUids;
+static std::vector<uint32_t> g_itemNameIds;
+
+static void writeItemList() {
+    typedef void* (*t_getAcc)(void*);
+    typedef uint32_t (*t_u32)(void*, uint32_t, void*);
+    typedef int (*t_i32)(void*, uint32_t, void*);
+    void* acc = ((t_getAcc)(g_base + OFF_GETITEMACC))(nullptr);
+    if (!acc) return;
+    char* dict = *(char**)((char*)acc + 0xB0);
+    if (!dict) return;
+    char* entries = *(char**)(dict + 0x18);
+    int count = *(int*)(dict + 0x20);
+    if (!entries || count <= 0 || count > 20000) return;
+    std::vector<uint32_t> uids;
+    for (int i = 0; i < count; i++) {
+        char* e = entries + 0x20 + i * 16;
+        int next = *(int*)(e + 4);
+        uint32_t key = *(uint32_t*)(e + 8);
+        if (next < -1 || key == 0) continue;
+        uids.push_back(key);
+    }
+    if (uids.empty()) return;
+    std::string path = outDir() + "/item_list.txt";
+    FILE* f = fopen(path.c_str(), "w");
+    if (!f) return;
+    g_itemUids.clear();
+    g_itemNameIds.clear();
+    for (size_t i = 0; i < uids.size(); i++) {
+        uint32_t u = uids[i];
+        uint32_t nameId = ((t_u32)(g_base + OFF_ITEMNAME))(acc, u, nullptr);
+        int cat = ((t_i32)(g_base + OFF_ITEMCAT))(acc, u, nullptr);
+        int sub = ((t_i32)(g_base + OFF_ITEMSUB))(acc, u, nullptr);
+        int kind = ((t_i32)(g_base + OFF_ITEMKIND))(acc, u, nullptr);
+        int sell = ((t_i32)(g_base + OFF_ITEMSELL))(acc, u, nullptr);
+        fprintf(f, "%u\t%u\t%d\t%d\t%d\t%d\n", u, nameId, cat, sub, kind, sell);
+        g_itemUids.push_back(u);
+        g_itemNameIds.push_back(nameId);
+    }
+    fclose(f);
+    g_itemListDone = true;
+}
+
+static void writeItemNames() {
+    typedef void* (*t_getMsg)(void*, int, void*);
+    std::string dir = outDir();
+    std::string mark = dir + "/item_names.started";
+    FILE* m = fopen(mark.c_str(), "r");
+    if (m) { fclose(m); g_itemNamesDone = true; return; }   // pernah crash di tahap ini, lewati
+    m = fopen(mark.c_str(), "w");
+    if (m) fclose(m);
+    std::string path = dir + "/item_names.txt";
+    FILE* f = fopen(path.c_str(), "w");
+    if (!f) return;
+    for (size_t i = 0; i < g_itemUids.size(); i++) {
+        void* s = ((t_getMsg)(g_base + OFF_GETMSG))(g_msgMgr, (int)g_itemNameIds[i], nullptr);
+        std::string nm = utf16ToUtf8(s);
+        fprintf(f, "%u\t%s\n", g_itemUids[i], nm.c_str());
+    }
+    fclose(f);
+    remove(mark.c_str());
+    g_itemNamesDone = true;
+}
+
 // ------------------------------------------------------------ fish log ----
 static int g_fishLogCount = 0;
 static const char* fishName(int st) {
@@ -667,6 +760,8 @@ static void h_PMUpdate(void* self, float dt, void* mi) {
     }
     if (g_harvestReq) { g_harvestReq = 0; harvestAll(); }
     if (g_dirtReq) { g_dirtReq = 0; cleanAllDirt(); }
+    if (!g_itemListDone && g_frame > 900 && (g_frame % 300) == 0) writeItemList();
+    if (g_itemListDone && !g_itemNamesDone && g_msgMgr && g_frame > 1800 && (g_frame % 300) == 0) writeItemNames();
     int sv = g_saveReq;
     if (sv >= 1 && sv <= 3) {
         g_saveReq = 0;
@@ -768,6 +863,11 @@ static void h_Dowse(void* self, float t, void* mi) {
 static void h_FishCS(void* self, int state, void* mi) {
     if (g_f[7]) fishLog("ChangeState", state);
     o_FishCS(self, state, mi);
+}
+
+static void* h_MsgGroup(void* self, int id, void* mi) {
+    g_msgMgr = self;
+    return o_MsgGroup(self, id, mi);
 }
 
 static int h_AddBag(uint32_t id, int count, bool noticeT, bool showLog, bool playSe, void* mi) {
@@ -899,6 +999,7 @@ static void* worker(void*) {
     installHook(H_FISHCS, (void*)h_FishCS, (void**)&o_FishCS);
     installHook(H_AHUPD, (void*)h_AHUpd, (void**)&o_AHUpd);
     installHook(H_ADDBAG, (void*)h_AddBag, (void**)&o_AddBag);
+    installHook(H_MSGGROUP, (void*)h_MsgGroup, (void**)&o_MsgGroup);
     loadPosFile();
     for (int f = 1; f < MAXF; f++) if (g_f[f]) setPatches(f, true);
     return nullptr;
@@ -926,7 +1027,7 @@ static const char* const FEATURES[] = {
     "CollapseAdd_6_Toggle_Crop Grew Overnight",
     "CollapseAdd_5_Toggle_Max Quality Crops",
     "CollapseAdd_46_Button_Panen Semua Tanaman",
-    "CollapseAdd_15_Toggle_Bibit, Pupuk dan Pakan Tidak Habis",
+    "CollapseAdd_15_Toggle_Bibit, Pupuk, Pakan dan Umpan Tidak Habis",
     "CollapseAdd_4_Toggle_Get Item x99",
     "CollapseAdd_14_Toggle_Bawa Lebih Banyak Item (tambah slot tas)",
     "CollapseAdd_18_SeekBar_Jarak Auto Ambil Barang (0=mati)_0_30",
@@ -943,7 +1044,6 @@ static const char* const FEATURES[] = {
     "CollapseAdd_47_Button_Bersihkan Semua Kompos Kandang",
     "Collapse_Tambang",
     "CollapseAdd_10_Toggle_Batu Sekali Pukul",
-    "CollapseAdd_11_Toggle_Tanpa Jebakan dan Batu Jatuh",
     "CollapseAdd_16_Toggle_Radar Tambang Lama",
     "CollapseAdd_60_Button_Lantai 1 sampai 10 (mulai lantai 1)",
     "CollapseAdd_61_Button_Lantai 11 sampai 20 (mulai lantai 11)",
